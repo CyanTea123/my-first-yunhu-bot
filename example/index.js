@@ -1,7 +1,8 @@
 const express = require('express');
-const OpenApi = require('../lib/OpenApi');
-const Subscription = require('../lib/Subscription');
-const GroupConfigManager = require('../lib/GroupConfigManager');
+const axios = require('axios');
+const OpenApi = require('./lib/OpenApi');
+const Subscription = require('./lib/Subscription');
+const GroupConfigManager = require('./lib/GroupConfigManager');
 
 const app = express();
 app.use(express.json());
@@ -11,18 +12,7 @@ const openApi = new OpenApi(TOKEN);
 const subscription = new Subscription();
 const groupConfigManager = new GroupConfigManager();
 
-const HELP_MESSAGE = `欢迎使用本机器人！以下是使用说明：
-- 绑定群聊: [群 ID]：绑定群聊。
-- 设置群看板: [群 ID]: [群看板内容]：设置群看板，支持 MD 语法。
-- 设置进群消息: [群 ID]: [进群消息内容]：设置进群消息，支持 MD 语法。
-- 设置退群消息: [群 ID]: [退群消息内容]：设置退群消息，支持 MD 语法。
-- 添加黑名单: [群 ID]: [用户 ID]：将用户添加到群黑名单。
-- 移除黑名单: [群 ID]: [用户 ID]：将用户从群黑名单中移除。`;
-
-// 检查用户是否具有管理员权限
-function hasAdminPermission(senderUserLevel) {
-    return ['administrator', 'owner'].includes(senderUserLevel);
-}
+const HELP_MESSAGE = `欢迎使用茶姬机器人！`;
 
 // 处理普通消息
 subscription.onMessageNormal(async (event) => {
@@ -31,13 +21,13 @@ subscription.onMessageNormal(async (event) => {
         const messageText = event.message.content.text;
         const conversation = event.chat;
         const msgId = event.message.msgId;
-        const senderUserLevel = event.sender.senderUserLevel;
 
         if (conversation.chatType === 'bot') {
             // 处理私聊消息
             if (messageText.startsWith('绑定群聊:')) {
                 const groupId = messageText.replace('绑定群聊:', '').trim();
-                if (hasAdminPermission(senderUserLevel)) {
+                const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
+                if (isAdmin) {
                     openApi.sendMessage(senderId, 'user', { text: `已成功绑定群聊 ${groupId}` });
                 } else {
                     openApi.sendMessage(senderId, 'user', { text: `你不是群 ${groupId} 的管理员，无法绑定该群。` });
@@ -45,7 +35,8 @@ subscription.onMessageNormal(async (event) => {
             } else if (messageText.startsWith('设置群看板:')) {
                 const [_, groupId, ...boardContentArr] = messageText.split(':');
                 const boardContent = boardContentArr.join(':').trim();
-                if (hasAdminPermission(senderUserLevel)) {
+                const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
+                if (isAdmin) {
                     const config = groupConfigManager.getConfig(groupId);
                     config.board = boardContent;
                     groupConfigManager.setConfig(groupId, config);
@@ -56,7 +47,8 @@ subscription.onMessageNormal(async (event) => {
             } else if (messageText.startsWith('设置进群消息:')) {
                 const [_, groupId, ...joinMessageArr] = messageText.split(':');
                 const joinMessage = joinMessageArr.join(':').trim();
-                if (hasAdminPermission(senderUserLevel)) {
+                const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
+                if (isAdmin) {
                     const config = groupConfigManager.getConfig(groupId);
                     config.joinMessage = joinMessage;
                     groupConfigManager.setConfig(groupId, config);
@@ -67,7 +59,8 @@ subscription.onMessageNormal(async (event) => {
             } else if (messageText.startsWith('设置退群消息:')) {
                 const [_, groupId, ...leaveMessageArr] = messageText.split(':');
                 const leaveMessage = leaveMessageArr.join(':').trim();
-                if (hasAdminPermission(senderUserLevel)) {
+                const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
+                if (isAdmin) {
                     const config = groupConfigManager.getConfig(groupId);
                     config.leaveMessage = leaveMessage;
                     groupConfigManager.setConfig(groupId, config);
@@ -77,7 +70,8 @@ subscription.onMessageNormal(async (event) => {
                 }
             } else if (messageText.startsWith('添加黑名单:')) {
                 const [_, groupId, userId] = messageText.split(':');
-                if (hasAdminPermission(senderUserLevel)) {
+                const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
+                if (isAdmin) {
                     const config = groupConfigManager.getConfig(groupId);
                     if (!config.blacklist.includes(userId)) {
                         config.blacklist.push(userId);
@@ -91,10 +85,11 @@ subscription.onMessageNormal(async (event) => {
                 }
             } else if (messageText.startsWith('移除黑名单:')) {
                 const [_, groupId, userId] = messageText.split(':');
-                if (hasAdminPermission(senderUserLevel)) {
+                const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
+                if (isAdmin) {
                     const config = groupConfigManager.getConfig(groupId);
                     const index = config.blacklist.indexOf(userId);
-                    if (index!== -1) {
+                    if (index !== -1) {
                         config.blacklist.splice(index, 1);
                         groupConfigManager.setConfig(groupId, config);
                         openApi.sendMessage(senderId, 'user', { text: `已将用户 ${userId} 从群 ${groupId} 的黑名单中移除` });
@@ -159,6 +154,47 @@ subscription.onGroupLeave((event) => {
     const config = groupConfigManager.getConfig(groupId);
     const leaveMessage = config.leaveMessage.replace('{userId}', userId);
     openApi.sendMarkdownMessage(groupId, 'group', { text: leaveMessage });
+});
+
+// 处理表单消息
+subscription.onMessageInstruction(async (event) => {
+    try {
+        const conversation = event.chat;
+        const groupId = conversation.chatId;
+        const content = event.message.content;
+
+        if (content.contentType === 'form' && content.formJson) {
+            const formData = content.formJson;
+            const config = groupConfigManager.getConfig(groupId);
+
+            // 处理群看板设置
+            if (formData.qavaqt && formData.qavaqt.value) {
+                config.board = formData.qavaqt.value;
+            }
+
+            // 处理进群欢迎设置
+            if (formData.ynpcgr && formData.ynpcgr.value) {
+                config.joinMessage = formData.ynpcgr.value;
+            }
+
+            // 处理退群消息设置
+            if (formData.kcykjx && formData.kcykjx.value) {
+                config.leaveMessage = formData.kcykjx.value;
+            }
+
+            // 处理群内黑名单用户设置
+            if (formData.khonut && formData.khonut.value) {
+                const userIds = formData.khonut.value.split(',').map(id => id.trim());
+                config.blacklist = userIds;
+            }
+
+            // 更新群配置
+            groupConfigManager.setConfig(groupId, config);
+            openApi.sendMessage(groupId, 'group', { text: `群 ${groupId} 的配置已更新。` });
+        }
+    } catch (error) {
+        console.error('Error handling form message:', error);
+    }
 });
 
 app.post('/sub', (req, res) => {
