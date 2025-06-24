@@ -6,7 +6,7 @@ const GroupConfigManager = require('../lib/GroupConfigManager');
 const app = express();
 app.use(express.json());
 
-const TOKEN = 'YOUR_ACTUAL_TOKEN';
+const TOKEN = '5155ecf9c1fb485595f2a6d295b5cba4';
 const openApi = new OpenApi(TOKEN);
 const subscription = new Subscription();
 const groupConfigManager = new GroupConfigManager();
