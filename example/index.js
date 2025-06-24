@@ -1,8 +1,8 @@
 const express = require('express');
 const axios = require('axios');
-const OpenApi = require('./lib/OpenApi');
-const Subscription = require('./lib/Subscription');
-const GroupConfigManager = require('./lib/GroupConfigManager');
+const OpenApi = require('../lib/OpenApi');
+const Subscription = require('../lib/Subscription');
+const GroupConfigManager = require('../lib/GroupConfigManager');
 
 const app = express();
 app.use(express.json());
