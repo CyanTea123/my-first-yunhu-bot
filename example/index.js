@@ -6,7 +6,7 @@ const GroupConfigManager = require('../lib/GroupConfigManager');
 const app = express();
 app.use(express.json());
 
-const TOKEN = '5155ecf9c1fb485595f2a6d295b5cba4';
+const TOKEN = 'YOUR_ACTUAL_TOKEN';
 const openApi = new OpenApi(TOKEN);
 const subscription = new Subscription();
 const groupConfigManager = new GroupConfigManager();
@@ -33,7 +33,12 @@ subscription.onMessageNormal(async (event) => {
                 const groupId = messageText.replace('绑定群聊:', '').trim();
                 const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
                 if (isAdmin) {
-                    openApi.sendMessage(senderId, 'user', { text: `已成功绑定群聊 ${groupId}` });
+                    const isBound = groupConfigManager.bindGroupToUser(senderId, groupId);
+                    if (isBound) {
+                        openApi.sendMessage(senderId, 'user', { text: `已成功绑定群聊 ${groupId}` });
+                    } else {
+                        openApi.sendMessage(senderId, 'user', { text: `群聊 ${groupId} 已经绑定` });
+                    }
                 } else {
                     openApi.sendMessage(senderId, 'user', { text: `你不是群 ${groupId} 的管理员，无法绑定该群。` });
                 }
@@ -41,42 +46,46 @@ subscription.onMessageNormal(async (event) => {
                 const [_, groupId, ...boardContentArr] = messageText.split(':');
                 const boardContent = boardContentArr.join(':').trim();
                 const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
-                if (isAdmin) {
+                const userGroups = groupConfigManager.getUserGroups(senderId);
+                if (isAdmin && userGroups.includes(groupId)) {
                     const config = groupConfigManager.getConfig(groupId);
                     config.board = boardContent;
                     groupConfigManager.setConfig(groupId, config);
                     openApi.sendMessage(senderId, 'user', { text: `群 ${groupId} 的群看板已设置为: ${boardContent}` });
                 } else {
-                    openApi.sendMessage(senderId, 'user', { text: `你不是群 ${groupId} 的管理员，无法设置该群的群看板。` });
+                    openApi.sendMessage(senderId, 'user', { text: `你没有权限设置群 ${groupId} 的群看板。` });
                 }
             } else if (messageText.startsWith('设置进群消息:')) {
                 const [_, groupId, ...joinMessageArr] = messageText.split(':');
                 const joinMessage = joinMessageArr.join(':').trim();
                 const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
-                if (isAdmin) {
+                const userGroups = groupConfigManager.getUserGroups(senderId);
+                if (isAdmin && userGroups.includes(groupId)) {
                     const config = groupConfigManager.getConfig(groupId);
                     config.joinMessage = joinMessage;
                     groupConfigManager.setConfig(groupId, config);
                     openApi.sendMessage(senderId, 'user', { text: `群 ${groupId} 的进群消息已设置为: ${joinMessage}` });
                 } else {
-                    openApi.sendMessage(senderId, 'user', { text: `你不是群 ${groupId} 的管理员，无法设置该群的进群消息。` });
+                    openApi.sendMessage(senderId, 'user', { text: `你没有权限设置群 ${groupId} 的进群消息。` });
                 }
             } else if (messageText.startsWith('设置退群消息:')) {
                 const [_, groupId, ...leaveMessageArr] = messageText.split(':');
                 const leaveMessage = leaveMessageArr.join(':').trim();
                 const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
-                if (isAdmin) {
+                const userGroups = groupConfigManager.getUserGroups(senderId);
+                if (isAdmin && userGroups.includes(groupId)) {
                     const config = groupConfigManager.getConfig(groupId);
                     config.leaveMessage = leaveMessage;
                     groupConfigManager.setConfig(groupId, config);
                     openApi.sendMessage(senderId, 'user', { text: `群 ${groupId} 的退群消息已设置为: ${leaveMessage}` });
                 } else {
-                    openApi.sendMessage(senderId, 'user', { text: `你不是群 ${groupId} 的管理员，无法设置该群的退群消息。` });
+                    openApi.sendMessage(senderId, 'user', { text: `你没有权限设置群 ${groupId} 的退群消息。` });
                 }
             } else if (messageText.startsWith('添加黑名单:')) {
                 const [_, groupId, userId] = messageText.split(':');
                 const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
-                if (isAdmin) {
+                const userGroups = groupConfigManager.getUserGroups(senderId);
+                if (isAdmin && userGroups.includes(groupId)) {
                     const config = groupConfigManager.getConfig(groupId);
                     if (!config.blacklist.includes(userId)) {
                         config.blacklist.push(userId);
@@ -86,12 +95,13 @@ subscription.onMessageNormal(async (event) => {
                         openApi.sendMessage(senderId, 'user', { text: `用户 ${userId} 已经在群 ${groupId} 的黑名单中` });
                     }
                 } else {
-                    openApi.sendMessage(senderId, 'user', { text: `你不是群 ${groupId} 的管理员，无法添加黑名单用户。` });
+                    openApi.sendMessage(senderId, 'user', { text: `你没有权限添加群 ${groupId} 的黑名单用户。` });
                 }
             } else if (messageText.startsWith('移除黑名单:')) {
                 const [_, groupId, userId] = messageText.split(':');
                 const isAdmin = await openApi.checkGroupAdmin(groupId, senderId);
-                if (isAdmin) {
+                const userGroups = groupConfigManager.getUserGroups(senderId);
+                if (isAdmin && userGroups.includes(groupId)) {
                     const config = groupConfigManager.getConfig(groupId);
                     const index = config.blacklist.indexOf(userId);
                     if (index !== -1) {
@@ -102,7 +112,7 @@ subscription.onMessageNormal(async (event) => {
                         openApi.sendMessage(senderId, 'user', { text: `用户 ${userId} 不在群 ${groupId} 的黑名单中` });
                     }
                 } else {
-                    openApi.sendMessage(senderId, 'user', { text: `你不是群 ${groupId} 的管理员，无法移除黑名单用户。` });
+                    openApi.sendMessage(senderId, 'user', { text: `你没有权限移除群 ${groupId} 的黑名单用户。` });
                 }
             }
         } else if (conversation.chatType === 'group') {
