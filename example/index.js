@@ -1,4 +1,4 @@
-cconst express = require('express');
+const express = require('express');
 const OpenApi = require('../lib/OpenApi');
 const Subscription = require('../lib/Subscription');
 const GroupConfigManager = require('../lib/GroupConfigManager');
