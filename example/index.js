@@ -44,6 +44,54 @@ function hasBlockedWord(messageText) {
     return blockedWords.some(word => messageText.includes(word));
 }
 
+// 处理群管命令
+async function handleAdminCommand(event) {
+    const sender = event.sender;
+    const chat = event.chat;
+    const message = event.message;
+    const groupId = chat.chatId;
+    const command = message.content.text.trim();
+
+    if (sender.senderUserLevel === 'owner' || sender.senderUserLevel === 'administrator') {
+        if (command === '/启用公共黑名单') {
+            // 这里添加启用公共黑名单的逻辑
+            await openApi.sendMessage(groupId, 'group', 'text', { text: '已启用公共黑名单' });
+        } else if (command === '/禁用公共黑名单') {
+            // 这里添加禁用公共黑名单的逻辑
+            await openApi.sendMessage(groupId, 'group', 'text', { text: '已禁用公共黑名单' });
+        } else if (command === '/启用独立黑名单') {
+            // 这里添加启用独立黑名单的逻辑
+            await openApi.sendMessage(groupId, 'group', 'text', { text: '已启用独立黑名单' });
+        } else if (command === '/禁用独立黑名单') {
+            // 这里添加禁用独立黑名单的逻辑
+            await openApi.sendMessage(groupId, 'group', 'text', { text: '已禁用独立黑名单' });
+        } else if (command.startsWith('/添加独立黑名单')) {
+            // 这里添加添加独立黑名单的逻辑
+            await openApi.sendMessage(groupId, 'group', 'text', { text: '已将用户添加到独立黑名单' });
+        } else if (command.startsWith('/移出独立黑名单')) {
+            // 这里添加移出独立黑名单的逻辑
+            await openApi.sendMessage(groupId, 'group', 'text', { text: '已将用户移出独立黑名单' });
+        }
+    } else {
+        await openApi.sendMessage(groupId, 'group', 'text', { text: '你没有权限执行此命令' });
+    }
+}
+
+// 处理帮助指令
+async function handleHelpCommand(event) {
+    const senderId = event.sender.senderId;
+    const recvType = 'user';
+    const helpMessage = `以下是可用指令列表：
+/help 或 /帮助 - 获取指令列表
+/启用公共黑名单 - 启用公共黑名单
+/禁用公共黑名单 - 禁用公共黑名单
+/启用独立黑名单 - 启用独立黑名单
+/禁用独立黑名单 - 禁用独立黑名单
+/添加独立黑名单 <用户 ID> <原因> - 将用户添加到独立黑名单
+/移出独立黑名单 <用户 ID> - 将用户移出独立黑名单`;
+    await openApi.sendMessage(senderId, recvType, 'text', { text: helpMessage });
+}
+
 subscription.onMessageNormal(async (event) => {
     console.log('Received a normal message:', event);
     const userId = event.sender.senderId;
@@ -51,6 +99,18 @@ subscription.onMessageNormal(async (event) => {
     const msgId = event.message.msgId;
     const recvId = event.chat.chatId;
     const recvType = event.chat.chatType;
+
+    if (messageText) {
+        if (recvType === 'user' && (messageText === '/help' || messageText === '/帮助')) {
+            await handleHelpCommand(event);
+            return;
+        } else if (messageText.startsWith('/')) {
+            if (recvType === 'group') {
+                await handleAdminCommand(event);
+            }
+            return;
+        }
+    }
 
     let shouldRecall = false;
     let noticeContent = '';
@@ -68,7 +128,7 @@ subscription.onMessageNormal(async (event) => {
         const recallResponse = await openApi.recallMessage(msgId, recvId, recvType);
         if (recallResponse.code === 0) {
             // 撤回成功，发送告知消息
-            await openApi.sendMessage(recvId, recvType, noticeContent);
+            await openApi.sendMessage(recvId, recvType, 'text', noticeContent);
         } else {
             console.log('Failed to recall message:', recallResponse);
         }
