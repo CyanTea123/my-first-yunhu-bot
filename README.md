@@ -1,3 +1,6 @@
+# my-first-yunhu-bot
+没什么好看的，只是一个云湖的群黑名单与屏蔽词机器人
+以下是YHNodeSDK的Readme：
 # 适用于云湖的NodeSDK
 这是一个适用于[云湖](https://www.yhchat.com)的**Node**SDK  
 使用此SDK, 您可以轻松的创建云湖机器人  
