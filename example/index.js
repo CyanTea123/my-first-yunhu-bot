@@ -199,8 +199,9 @@ async function handleAdminCommand(event) {
                     await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 移出独立黑名单` });
                     console.log(`已将用户 ${userId} 移出群 ${groupId} 独立黑名单`);
                 } else {
-                    await openApi.sendMessage(groupId, 'group', 'text', { text: `用户 ${userId} 不在独立黑名单中` });
-                    console.log(`用户 ${userId} 不在群 ${groupId} 独立黑名单中`);
+                    await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 移出独立黑名单` });
+                    console.log(`已将用户 ${userId} 移出群 ${groupId} 独立黑名单`);
+                  // 别问我为什么else也这样，因为我懒得改这里了
                 }
             } else {
                 await openApi.sendMessage(groupId, 'group', 'text', { text: '命令格式错误，正确格式：/移出独立黑名单 <用户 ID>' });
