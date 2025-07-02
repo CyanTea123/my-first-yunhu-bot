@@ -11,48 +11,59 @@ const TOKEN = '5155ecf9c1fb485595f2a6d295b5cba4';
 const openApi = new OpenApi(TOKEN);
 const subscription = new Subscription();
 
-// 加载公共黑名单
-const blacklistFilePath = path.join(__dirname, 'blacklist.json');
-let publicBlacklist = [];
-if (fs.existsSync(blacklistFilePath)) {
-    const blacklistData = fs.readFileSync(blacklistFilePath, 'utf8');
-    publicBlacklist = JSON.parse(blacklistData);
-}
-
 // 群黑名单配置
 const groupBlacklistConfig = {};
 
 // 启用独立黑名单的群 ID 文件路径
 const enabledGroupBlacklistFilePath = path.join(__dirname, 'enabled_group_blacklists.json');
 
+// 不启用公共黑名单的群 ID 文件路径
+const disabledPublicBlacklistGroupsFilePath = path.join(__dirname, 'disabled_public_blacklist_groups.json');
+
 // 加载启用独立黑名单的群 ID
 function loadEnabledGroupBlacklists() {
-    if (fs.existsSync(enabledGroupBlacklistFilePath)) {
-        const data = fs.readFileSync(enabledGroupBlacklistFilePath, 'utf8');
-        return JSON.parse(data);
+    try {
+        if (fs.existsSync(enabledGroupBlacklistFilePath)) {
+            const data = fs.readFileSync(enabledGroupBlacklistFilePath, 'utf8');
+            return JSON.parse(data);
+        }
+    } catch (error) {
+        console.error('Error loading enabled group blacklists:', error);
     }
     return [];
 }
 
 // 保存启用独立黑名单的群 ID
 function saveEnabledGroupBlacklists(groupIds) {
-    fs.writeFileSync(enabledGroupBlacklistFilePath, JSON.stringify(groupIds, null, 2));
+    try {
+        fs.writeFileSync(enabledGroupBlacklistFilePath, JSON.stringify(groupIds, null, 2));
+    } catch (error) {
+        console.error('Error saving enabled group blacklists:', error);
+    }
 }
 
 // 加载群独立黑名单
 function loadGroupBlacklist(groupId) {
-    const groupBlacklistFilePath = path.join(__dirname, `${groupId}.json`);
-    if (fs.existsSync(groupBlacklistFilePath)) {
-        const blacklistData = fs.readFileSync(groupBlacklistFilePath, 'utf8');
-        return JSON.parse(blacklistData);
+    try {
+        const groupBlacklistFilePath = path.join(__dirname, `${groupId}.json`);
+        if (fs.existsSync(groupBlacklistFilePath)) {
+            const blacklistData = fs.readFileSync(groupBlacklistFilePath, 'utf8');
+            return JSON.parse(blacklistData);
+        }
+    } catch (error) {
+        console.error(`Error loading group blacklist for group ${groupId}:`, error);
     }
     return [];
 }
 
 // 保存群独立黑名单
 function saveGroupBlacklist(groupId, blacklist) {
-    const groupBlacklistFilePath = path.join(__dirname, `${groupId}.json`);
-    fs.writeFileSync(groupBlacklistFilePath, JSON.stringify(blacklist, null, 2));
+    try {
+        const groupBlacklistFilePath = path.join(__dirname, `${groupId}.json`);
+        fs.writeFileSync(groupBlacklistFilePath, JSON.stringify(blacklist, null, 2));
+    } catch (error) {
+        console.error(`Error saving group blacklist for group ${groupId}:`, error);
+    }
 }
 
 // 从独立黑名单中移除用户
@@ -63,28 +74,75 @@ function removeUserFromGroupBlacklist(groupId, userId) {
     return newBlacklist;
 }
 
+// 加载公共黑名单
+function loadPublicBlacklist() {
+    try {
+        const blacklistFilePath = path.join(__dirname, 'blacklist.json');
+        if (fs.existsSync(blacklistFilePath)) {
+            const blacklistData = fs.readFileSync(blacklistFilePath, 'utf8');
+            return JSON.parse(blacklistData);
+        }
+    } catch (error) {
+        console.error('Error loading public blacklist:', error);
+    }
+    return [];
+}
+
 // 检查用户是否在黑名单中
 function isUserInBlacklist(userId, groupId) {
     let blacklist = [];
-    const groupConfig = groupBlacklistConfig[groupId] || {};
-    if (groupConfig.usePublicBlacklist) {
-        blacklist = blacklist.concat(publicBlacklist);
+    const disabledPublicBlacklistGroups = loadDisabledPublicBlacklistGroups();
+    const usePublicBlacklist =!disabledPublicBlacklistGroups.includes(groupId);
+
+    if (usePublicBlacklist) {
+        blacklist = blacklist.concat(loadPublicBlacklist());
     }
+
+    const groupConfig = groupBlacklistConfig[groupId] || {};
     if (groupConfig.useGroupBlacklist) {
         blacklist = blacklist.concat(loadGroupBlacklist(groupId));
     }
+
+    // 调试输出，检查合并后的黑名单
+    console.log(`Merged blacklist for group ${groupId}:`, blacklist);
+
     return blacklist.some(user => user.userId === userId);
+}
+
+// 加载不启用公共黑名单的群 ID
+function loadDisabledPublicBlacklistGroups() {
+    try {
+        if (fs.existsSync(disabledPublicBlacklistGroupsFilePath)) {
+            const data = fs.readFileSync(disabledPublicBlacklistGroupsFilePath, 'utf8');
+            return JSON.parse(data);
+        }
+    } catch (error) {
+        console.error('Error loading disabled public blacklist groups:', error);
+    }
+    return [];
+}
+
+// 保存不启用公共黑名单的群 ID
+function saveDisabledPublicBlacklistGroups(groupIds) {
+    try {
+        fs.writeFileSync(disabledPublicBlacklistGroupsFilePath, JSON.stringify(groupIds, null, 2));
+    } catch (error) {
+        console.error('Error saving disabled public blacklist groups:', error);
+    }
 }
 
 // 动态加载屏蔽词列表
 function loadBlockedWords() {
-    const blockedWordsFilePath = path.join(__dirname, 'blocked_words.json');
-    let blockedWords = [];
-    if (fs.existsSync(blockedWordsFilePath)) {
-        const blockedWordsData = fs.readFileSync(blockedWordsFilePath, 'utf8');
-        blockedWords = JSON.parse(blockedWordsData);
+    try {
+        const blockedWordsFilePath = path.join(__dirname, 'blocked_words.json');
+        if (fs.existsSync(blockedWordsFilePath)) {
+            const blockedWordsData = fs.readFileSync(blockedWordsFilePath, 'utf8');
+            return JSON.parse(blockedWordsData);
+        }
+    } catch (error) {
+        console.error('Error loading blocked words:', error);
     }
-    return blockedWords;
+    return [];
 }
 
 // 检查消息是否包含屏蔽词
