@@ -11,58 +11,78 @@ const TOKEN = '5155ecf9c1fb485595f2a6d295b5cba4';
 const openApi = new OpenApi(TOKEN);
 const subscription = new Subscription();
 
+// 加载公共黑名单
+const blacklistFilePath = path.join(__dirname, 'blacklist.json');
+let publicBlacklist = [];
+try {
+    if (fs.existsSync(blacklistFilePath)) {
+        const blacklistData = fs.readFileSync(blacklistFilePath, 'utf8');
+        publicBlacklist = JSON.parse(blacklistData);
+        console.log('公共黑名单加载成功');
+    } else {
+        console.log('公共黑名单文件不存在');
+    }
+} catch (error) {
+    console.error('加载公共黑名单时出错:', error);
+}
+
 // 群黑名单配置
 const groupBlacklistConfig = {};
 
 // 启用独立黑名单的群 ID 文件路径
 const enabledGroupBlacklistFilePath = path.join(__dirname, 'enabled_group_blacklists.json');
 
-// 不启用公共黑名单的群 ID 文件路径
-const disabledPublicBlacklistGroupsFilePath = path.join(__dirname, 'disabled_public_blacklist_groups.json');
-
 // 加载启用独立黑名单的群 ID
 function loadEnabledGroupBlacklists() {
     try {
         if (fs.existsSync(enabledGroupBlacklistFilePath)) {
             const data = fs.readFileSync(enabledGroupBlacklistFilePath, 'utf8');
+            console.log('启用独立黑名单的群 ID 加载成功');
             return JSON.parse(data);
         }
+        console.log('启用独立黑名单的群 ID 文件不存在');
+        return [];
     } catch (error) {
-        console.error('Error loading enabled group blacklists:', error);
+        console.error('加载启用独立黑名单的群 ID 时出错:', error);
+        return [];
     }
-    return [];
 }
 
 // 保存启用独立黑名单的群 ID
 function saveEnabledGroupBlacklists(groupIds) {
     try {
         fs.writeFileSync(enabledGroupBlacklistFilePath, JSON.stringify(groupIds, null, 2));
+        console.log('启用独立黑名单的群 ID 保存成功');
     } catch (error) {
-        console.error('Error saving enabled group blacklists:', error);
+        console.error('保存启用独立黑名单的群 ID 时出错:', error);
     }
 }
 
 // 加载群独立黑名单
 function loadGroupBlacklist(groupId) {
+    const groupBlacklistFilePath = path.join(__dirname, `${groupId}.json`);
     try {
-        const groupBlacklistFilePath = path.join(__dirname, `${groupId}.json`);
         if (fs.existsSync(groupBlacklistFilePath)) {
             const blacklistData = fs.readFileSync(groupBlacklistFilePath, 'utf8');
+            console.log(`群 ${groupId} 独立黑名单加载成功`);
             return JSON.parse(blacklistData);
         }
+        console.log(`群 ${groupId} 独立黑名单文件不存在`);
+        return [];
     } catch (error) {
-        console.error(`Error loading group blacklist for group ${groupId}:`, error);
+        console.error(`加载群 ${groupId} 独立黑名单时出错:`, error);
+        return [];
     }
-    return [];
 }
 
 // 保存群独立黑名单
 function saveGroupBlacklist(groupId, blacklist) {
+    const groupBlacklistFilePath = path.join(__dirname, `${groupId}.json`);
     try {
-        const groupBlacklistFilePath = path.join(__dirname, `${groupId}.json`);
         fs.writeFileSync(groupBlacklistFilePath, JSON.stringify(blacklist, null, 2));
+        console.log(`群 ${groupId} 独立黑名单保存成功`);
     } catch (error) {
-        console.error(`Error saving group blacklist for group ${groupId}:`, error);
+        console.error(`保存群 ${groupId} 独立黑名单时出错:`, error);
     }
 }
 
@@ -74,75 +94,42 @@ function removeUserFromGroupBlacklist(groupId, userId) {
     return newBlacklist;
 }
 
-// 加载公共黑名单
-function loadPublicBlacklist() {
-    try {
-        const blacklistFilePath = path.join(__dirname, 'blacklist.json');
-        if (fs.existsSync(blacklistFilePath)) {
-            const blacklistData = fs.readFileSync(blacklistFilePath, 'utf8');
-            return JSON.parse(blacklistData);
-        }
-    } catch (error) {
-        console.error('Error loading public blacklist:', error);
-    }
-    return [];
+// 检查用户是否在公共黑名单中
+function isUserInPublicBlacklist(userId) {
+    const isInBlacklist = publicBlacklist.some(user => user.userId === userId);
+    console.log(`用户 ${userId} 是否在公共黑名单中: ${isInBlacklist}`);
+    return isInBlacklist;
 }
 
-// 检查用户是否在黑名单中
-function isUserInBlacklist(userId, groupId) {
-    let blacklist = [];
-    const disabledPublicBlacklistGroups = loadDisabledPublicBlacklistGroups();
-    const usePublicBlacklist =!disabledPublicBlacklistGroups.includes(groupId);
-
-    if (usePublicBlacklist) {
-        blacklist = blacklist.concat(loadPublicBlacklist());
+// 检查用户是否在群独立黑名单中
+function isUserInGroupBlacklist(userId, groupId) {
+    const enabledGroupBlacklists = loadEnabledGroupBlacklists();
+    if (enabledGroupBlacklists.includes(groupId)) {
+        const groupBlacklist = loadGroupBlacklist(groupId);
+        const isInBlacklist = groupBlacklist.some(user => user.userId === userId);
+        console.log(`用户 ${userId} 是否在群 ${groupId} 独立黑名单中: ${isInBlacklist}`);
+        return isInBlacklist;
     }
-
-    const groupConfig = groupBlacklistConfig[groupId] || {};
-    if (groupConfig.useGroupBlacklist) {
-        blacklist = blacklist.concat(loadGroupBlacklist(groupId));
-    }
-
-    // 调试输出，检查合并后的黑名单
-    console.log(`Merged blacklist for group ${groupId}:`, blacklist);
-
-    return blacklist.some(user => user.userId === userId);
-}
-
-// 加载不启用公共黑名单的群 ID
-function loadDisabledPublicBlacklistGroups() {
-    try {
-        if (fs.existsSync(disabledPublicBlacklistGroupsFilePath)) {
-            const data = fs.readFileSync(disabledPublicBlacklistGroupsFilePath, 'utf8');
-            return JSON.parse(data);
-        }
-    } catch (error) {
-        console.error('Error loading disabled public blacklist groups:', error);
-    }
-    return [];
-}
-
-// 保存不启用公共黑名单的群 ID
-function saveDisabledPublicBlacklistGroups(groupIds) {
-    try {
-        fs.writeFileSync(disabledPublicBlacklistGroupsFilePath, JSON.stringify(groupIds, null, 2));
-    } catch (error) {
-        console.error('Error saving disabled public blacklist groups:', error);
-    }
+    console.log(`群 ${groupId} 未启用独立黑名单，用户 ${userId} 不在群独立黑名单中`);
+    return false;
 }
 
 // 动态加载屏蔽词列表
 function loadBlockedWords() {
+    const blockedWordsFilePath = path.join(__dirname, 'blocked_words.json');
+    let blockedWords = [];
     try {
-        const blockedWordsFilePath = path.join(__dirname, 'blocked_words.json');
         if (fs.existsSync(blockedWordsFilePath)) {
             const blockedWordsData = fs.readFileSync(blockedWordsFilePath, 'utf8');
-            return JSON.parse(blockedWordsData);
+            blockedWords = JSON.parse(blockedWordsData);
+            console.log('屏蔽词列表加载成功');
+        } else {
+            console.log('屏蔽词列表文件不存在');
         }
     } catch (error) {
-        console.error('Error loading blocked words:', error);
+        console.error('加载屏蔽词列表时出错:', error);
     }
-    return [];
+    return blockedWords;
 }
 
 // 检查消息是否包含屏蔽词
@@ -151,7 +138,9 @@ function hasBlockedWord(messageText) {
         return false;
     }
     const blockedWords = loadBlockedWords();
-    return blockedWords.some(word => messageText.includes(word));
+    const hasBlocked = blockedWords.some(word => messageText.includes(word));
+    console.log('屏蔽词已检测');
+    return hasBlocked;
 }
 
 // 处理群管命令
@@ -166,9 +155,11 @@ async function handleAdminCommand(event) {
         if (command === '/启用公共黑名单') {
             groupBlacklistConfig[groupId] = { ...groupBlacklistConfig[groupId], usePublicBlacklist: true };
             await openApi.sendMessage(groupId, 'group', 'text', { text: '已启用公共黑名单' });
+            console.log(`群 ${groupId} 已启用公共黑名单`);
         } else if (command === '/禁用公共黑名单') {
             groupBlacklistConfig[groupId] = { ...groupBlacklistConfig[groupId], usePublicBlacklist: false };
             await openApi.sendMessage(groupId, 'group', 'text', { text: '已禁用公共黑名单' });
+            console.log(`群 ${groupId} 已禁用公共黑名单`);
         } else if (command === '/启用独立黑名单') {
             groupBlacklistConfig[groupId] = { ...groupBlacklistConfig[groupId], useGroupBlacklist: true };
             const enabledGroupBlacklists = loadEnabledGroupBlacklists();
@@ -177,12 +168,14 @@ async function handleAdminCommand(event) {
                 saveEnabledGroupBlacklists(enabledGroupBlacklists);
             }
             await openApi.sendMessage(groupId, 'group', 'text', { text: '已启用独立黑名单' });
+            console.log(`群 ${groupId} 已启用独立黑名单`);
         } else if (command === '/禁用独立黑名单') {
             groupBlacklistConfig[groupId] = { ...groupBlacklistConfig[groupId], useGroupBlacklist: false };
             const enabledGroupBlacklists = loadEnabledGroupBlacklists();
             const newEnabledGroupBlacklists = enabledGroupBlacklists.filter(id => id!== groupId);
             saveEnabledGroupBlacklists(newEnabledGroupBlacklists);
             await openApi.sendMessage(groupId, 'group', 'text', { text: '已禁用独立黑名单' });
+            console.log(`群 ${groupId} 已禁用独立黑名单`);
         } else if (command.startsWith('/添加独立黑名单')) {
             const parts = command.split(' ');
             if (parts.length >= 3) {
@@ -192,8 +185,10 @@ async function handleAdminCommand(event) {
                 groupBlacklist.push({ userId, reason });
                 saveGroupBlacklist(groupId, groupBlacklist);
                 await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 添加到独立黑名单，原因：${reason}` });
+                console.log(`已将用户 ${userId} 添加到群 ${groupId} 独立黑名单，原因：${reason}`);
             } else {
                 await openApi.sendMessage(groupId, 'group', 'text', { text: '命令格式错误，正确格式：/添加独立黑名单 <用户 ID> <原因>' });
+                console.log(`群 ${groupId} 添加独立黑名单命令格式错误`);
             }
         } else if (command.startsWith('/移出独立黑名单')) {
             const parts = command.split(' ');
@@ -202,15 +197,19 @@ async function handleAdminCommand(event) {
                 const newBlacklist = removeUserFromGroupBlacklist(groupId, userId);
                 if (newBlacklist.length < loadGroupBlacklist(groupId).length) {
                     await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 移出独立黑名单` });
+                    console.log(`已将用户 ${userId} 移出群 ${groupId} 独立黑名单`);
                 } else {
                     await openApi.sendMessage(groupId, 'group', 'text', { text: `用户 ${userId} 不在独立黑名单中` });
+                    console.log(`用户 ${userId} 不在群 ${groupId} 独立黑名单中`);
                 }
             } else {
                 await openApi.sendMessage(groupId, 'group', 'text', { text: '命令格式错误，正确格式：/移出独立黑名单 <用户 ID>' });
+                console.log(`群 ${groupId} 移出独立黑名单命令格式错误`);
             }
         }
     } else {
         await openApi.sendMessage(groupId, 'group', 'text', { text: '你没有权限执行此命令' });
+        console.log(`群 ${groupId} 非管理员尝试执行群管命令`);
     }
 }
 
@@ -230,12 +229,22 @@ subscription.onMessageNormal(async (event) => {
     let shouldRecall = false;
     let noticeContent = '';
 
-    if (isUserInBlacklist(userId, recvId)) {
-        shouldRecall = true;
-        noticeContent = { text: '您已被列入黑名单，您的消息已被撤回。' };
-    } else if (hasBlockedWord(messageText)) {
+    // 检测屏蔽词
+    if (hasBlockedWord(messageText)) {
         shouldRecall = true;
         noticeContent = { text: '您的消息包含屏蔽词，已被撤回。' };
+    }
+
+    // 检测公共黑名单
+    if (isUserInPublicBlacklist(userId)) {
+        shouldRecall = true;
+        noticeContent = { text: '您已被列入公共黑名单，您的消息已被撤回。' };
+    }
+
+    // 检测群独立黑名单
+    if (isUserInGroupBlacklist(userId, recvId)) {
+        shouldRecall = true;
+        noticeContent = { text: '您已被列入本群黑名单，您的消息已被撤回。' };
     }
 
     if (shouldRecall) {
@@ -244,6 +253,7 @@ subscription.onMessageNormal(async (event) => {
         if (recallResponse.code === 0) {
             // 撤回成功，发送告知消息
             await openApi.sendMessage(recvId, recvType, 'text', noticeContent);
+            console.log(`用户 ${userId} 的消息 ${msgId} 已撤回，原因：${noticeContent.text}`);
         } else {
             console.log('Failed to recall message:', recallResponse);
         }
