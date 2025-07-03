@@ -150,7 +150,23 @@ async function handleAdminCommand(event) {
     const message = event.message;
     const groupId = chat.chatId;
     const command = message.content.text.trim();
+    const msgId = message.msgId; // 确保获取正确的 msgId
 
+    // 先检测屏蔽词
+    if (hasBlockedWord(command)) {
+        // 撤回消息
+        const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
+        if (recallResult.code === 1) {
+            await openApi.sendMessage(groupId, 'group', 'text', { text: '您的消息包含屏蔽词，已被撤回。' });
+            console.log(`群 ${groupId} 消息包含屏蔽词，已被拦截并撤回，msgId: ${msgId}`);
+        } else {
+            await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，但撤回失败，请手动处理' });
+            console.error(`群 ${groupId} 消息包含屏蔽词，撤回失败，msgId: ${msgId}, 错误信息: ${recallResult.msg}`);
+        }
+        return;
+    }
+
+    // 原有的群管命令处理逻辑保持不变
     if (sender.senderUserLevel === 'owner' || sender.senderUserLevel === 'administrator') {
         if (command === '/启用公共黑名单') {
             groupBlacklistConfig[groupId] = { ...groupBlacklistConfig[groupId], usePublicBlacklist: true };
@@ -181,17 +197,11 @@ async function handleAdminCommand(event) {
             if (parts.length >= 3) {
                 const userId = parts[1];
                 const reason = parts.slice(2).join(' ');
-                // 检查用户 ID 是否为纯数字
-                if (/^\d+$/.test(userId)) {
-                    const groupBlacklist = loadGroupBlacklist(groupId);
-                    groupBlacklist.push({ userId, reason });
-                    saveGroupBlacklist(groupId, groupBlacklist);
-                    await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 添加到独立黑名单，原因：${reason}` });
-                    console.log(`已将用户 ${userId} 添加到群 ${groupId} 独立黑名单，原因：${reason}`);
-                } else {
-                    await openApi.sendMessage(groupId, 'group', 'text', { text: '用户 ID 必须为纯数字，请重新输入。' });
-                    console.log(`群 ${groupId} 添加独立黑名单时用户 ID 格式错误`);
-                }
+                const groupBlacklist = loadGroupBlacklist(groupId);
+                groupBlacklist.push({ userId, reason });
+                saveGroupBlacklist(groupId, groupBlacklist);
+                await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 添加到独立黑名单，原因：${reason}` });
+                console.log(`已将用户 ${userId} 添加到群 ${groupId} 独立黑名单，原因：${reason}`);
             } else {
                 await openApi.sendMessage(groupId, 'group', 'text', { text: '命令格式错误，正确格式：/添加独立黑名单 <用户 ID> <原因>' });
                 console.log(`群 ${groupId} 添加独立黑名单命令格式错误`);
@@ -257,7 +267,7 @@ subscription.onMessageNormal(async (event) => {
     if (shouldRecall) {
         // 撤回消息
         const recallResponse = await openApi.recallMessage(msgId, recvId, recvType);
-        if (recallResponse.code === 0) {
+        if (recallResponse.code === 1) {
             // 撤回成功，发送告知消息
             await openApi.sendMessage(recvId, recvType, 'text', noticeContent);
             console.log(`用户 ${userId} 的消息 ${msgId} 已撤回，原因：${noticeContent.text}`);
