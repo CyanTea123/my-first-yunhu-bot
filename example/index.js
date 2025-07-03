@@ -181,11 +181,17 @@ async function handleAdminCommand(event) {
             if (parts.length >= 3) {
                 const userId = parts[1];
                 const reason = parts.slice(2).join(' ');
-                const groupBlacklist = loadGroupBlacklist(groupId);
-                groupBlacklist.push({ userId, reason });
-                saveGroupBlacklist(groupId, groupBlacklist);
-                await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 添加到独立黑名单，原因：${reason}` });
-                console.log(`已将用户 ${userId} 添加到群 ${groupId} 独立黑名单，原因：${reason}`);
+                // 检查用户 ID 是否为纯数字
+                if (/^\d+$/.test(userId)) {
+                    const groupBlacklist = loadGroupBlacklist(groupId);
+                    groupBlacklist.push({ userId, reason });
+                    saveGroupBlacklist(groupId, groupBlacklist);
+                    await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 添加到独立黑名单，原因：${reason}` });
+                    console.log(`已将用户 ${userId} 添加到群 ${groupId} 独立黑名单，原因：${reason}`);
+                } else {
+                    await openApi.sendMessage(groupId, 'group', 'text', { text: '用户 ID 必须为纯数字，请重新输入。' });
+                    console.log(`群 ${groupId} 添加独立黑名单时用户 ID 格式错误`);
+                }
             } else {
                 await openApi.sendMessage(groupId, 'group', 'text', { text: '命令格式错误，正确格式：/添加独立黑名单 <用户 ID> <原因>' });
                 console.log(`群 ${groupId} 添加独立黑名单命令格式错误`);
