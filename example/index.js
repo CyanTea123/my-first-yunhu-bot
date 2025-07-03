@@ -132,13 +132,65 @@ function loadBlockedWords() {
     return blockedWords;
 }
 
+// 群自定义禁用屏蔽词文件路径
+const groupBlockedWordsFilePath = path.join(__dirname, 'group_blocked_words.json');
+
+// 加载群自定义禁用屏蔽词
+function loadGroupBlockedWords() {
+    try {
+        if (fs.existsSync(groupBlockedWordsFilePath)) {
+            const data = fs.readFileSync(groupBlockedWordsFilePath, 'utf8');
+            console.log('群自定义禁用屏蔽词加载成功');
+            return JSON.parse(data);
+        }
+        console.log('群自定义禁用屏蔽词文件不存在');
+        return {};
+    } catch (error) {
+        console.error('加载群自定义禁用屏蔽词时出错:', error);
+        return {};
+    }
+}
+
+// 保存群自定义禁用屏蔽词
+function saveGroupBlockedWords(groupBlockedWords) {
+    try {
+        const chunkSize = 100; // 每批保存的数据量
+        const keys = Object.keys(groupBlockedWords);
+        for (let i = 0; i < keys.length; i += chunkSize) {
+            const chunkKeys = keys.slice(i, i + chunkSize);
+            const chunkData = {};
+            chunkKeys.forEach(key => {
+                chunkData[key] = groupBlockedWords[key];
+            });
+
+            const existingData = fs.existsSync(groupBlockedWordsFilePath)? JSON.parse(fs.readFileSync(groupBlockedWordsFilePath, 'utf8')) : {};
+            const newData = { ...existingData, ...chunkData };
+
+            fs.writeFileSync(groupBlockedWordsFilePath, JSON.stringify(newData, null, 2));
+        }
+        console.log('群自定义禁用屏蔽词保存成功');
+    } catch (error) {
+        console.error('保存群自定义禁用屏蔽词时出错:', error);
+    }
+}
+
 // 检查消息是否包含屏蔽词
-function hasBlockedWord(messageText) {
+function hasBlockedWord(messageText, groupId) {
     if (typeof messageText!== 'string') {
         return false;
     }
     const blockedWords = loadBlockedWords();
-    const hasBlocked = blockedWords.some(word => messageText.includes(word));
+    const groupBlockedWords = loadGroupBlockedWords();
+    const groupConfig = groupBlockedWords[groupId];
+
+    if (groupConfig && groupConfig.allofthem) {
+        return false; // 群屏蔽词判断已关闭
+    }
+
+    const disabledWords = groupConfig? groupConfig.words : [];
+    const filteredBlockedWords = blockedWords.filter(word =>!disabledWords.includes(word));
+
+    const hasBlocked = filteredBlockedWords.some(word => messageText.includes(word));
     console.log('屏蔽词已检测');
     return hasBlocked;
 }
@@ -150,23 +202,13 @@ async function handleAdminCommand(event) {
     const message = event.message;
     const groupId = chat.chatId;
     const command = message.content.text.trim();
-    const msgId = message.msgId;
 
-    // 检测屏蔽词
-    if (hasBlockedWord(command)) {
-        // 撤回消息
-        const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
-        if (recallResult.code === 1) {
-            await openApi.sendMessage(groupId, 'group', 'text', { text: '您的消息包含屏蔽词，已被撤回。' });
-            console.log(`群 ${groupId} 消息包含屏蔽词，已被拦截并撤回，msgId: ${msgId}`);
-        } else {
-            await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，但撤回失败，请手动处理' });
-            console.error(`群 ${groupId} 消息包含屏蔽词，撤回失败，msgId: ${msgId}, 错误信息: ${recallResult.msg}`);
-        }
+    // 检查消息是否以 / 开头
+    if (!command.startsWith('/')) {
+        console.log(`群 ${groupId} 收到非指令消息: ${command}`);
         return;
     }
 
-    // 原有的群管命令处理逻辑保持不变
     if (sender.senderUserLevel === 'owner' || sender.senderUserLevel === 'administrator') {
         if (command === '/启用公共黑名单') {
             groupBlacklistConfig[groupId] = { ...groupBlacklistConfig[groupId], usePublicBlacklist: true };
@@ -217,11 +259,34 @@ async function handleAdminCommand(event) {
                 } else {
                     await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 移出独立黑名单` });
                     console.log(`已将用户 ${userId} 移出群 ${groupId} 独立黑名单`);
-                  // 别问我为什么else也这样，因为我懒得改这里了
                 }
             } else {
                 await openApi.sendMessage(groupId, 'group', 'text', { text: '命令格式错误，正确格式：/移出独立黑名单 <用户 ID>' });
                 console.log(`群 ${groupId} 移出独立黑名单命令格式错误`);
+            }
+        } else if (command.startsWith('/禁用群屏蔽词')) {
+            const parts = command.split(' ');
+            if (parts.length === 2) {
+                const word = parts[1];
+                const groupBlockedWords = loadGroupBlockedWords();
+                if (!groupBlockedWords[groupId]) {
+                    groupBlockedWords[groupId] = { allofthem: false, words: [] };
+                }
+                if (word === 'allofthem') {
+                    groupBlockedWords[groupId].allofthem = true;
+                    await openApi.sendMessage(groupId, 'group', 'text', { text: '已关闭该群的屏蔽词判断' });
+                    console.log(`群 ${groupId} 已关闭屏蔽词判断`);
+                } else {
+                    if (!groupBlockedWords[groupId].words.includes(word)) {
+                        groupBlockedWords[groupId].words.push(word);
+                        await openApi.sendMessage(groupId, 'group', 'text', { text: `已禁用屏蔽词 "${word}"` });
+                        console.log(`群 ${groupId} 已禁用屏蔽词 "${word}"`);
+                    } else {
+                        await openApi.sendMessage(groupId, 'group', 'text', { text: `屏蔽词 "${word}" 已被禁用` });
+                        console.log(`群 ${groupId} 屏蔽词 "${word}" 已被禁用`);
+                    }
+                }
+                saveGroupBlockedWords(groupBlockedWords);
             }
         }
     } else {
@@ -234,47 +299,21 @@ subscription.onMessageNormal(async (event) => {
     console.log('Received a normal message:', event);
     const userId = event.sender.senderId;
     const messageText = event.message.content? event.message.content.text : null;
-    const msgId = event.message.msgId;
-    const recvId = event.chat.chatId;
-    const recvType = event.chat.chatType;
+    const groupId = event.chat.chatId;
 
-    if (messageText && messageText.startsWith('/')) {
-        await handleAdminCommand(event);
-        return;
-    }
-
-    let shouldRecall = false;
-    let noticeContent = '';
-
-    // 检测屏蔽词
-    if (hasBlockedWord(messageText)) {
-        shouldRecall = true;
-        noticeContent = { text: '您的消息包含屏蔽词，已被撤回。' };
-    }
-
-    // 检测公共黑名单
-    if (isUserInPublicBlacklist(userId)) {
-        shouldRecall = true;
-        noticeContent = { text: '您已被列入公共黑名单，您的消息已被撤回。' };
-    }
-
-    // 检测群独立黑名单
-    if (isUserInGroupBlacklist(userId, recvId)) {
-        shouldRecall = true;
-        noticeContent = { text: '您已被列入本群黑名单，您的消息已被撤回。' };
-    }
-
-    if (shouldRecall) {
-        // 撤回消息
-        const recallResponse = await openApi.recallMessage(msgId, recvId, recvType);
-        if (recallResponse.code === 1) {
-            // 撤回成功，发送告知消息
-            await openApi.sendMessage(recvId, recvType, 'text', noticeContent);
-            console.log(`用户 ${userId} 的消息 ${msgId} 已撤回，原因：${noticeContent.text}`);
+    if (messageText && hasBlockedWord(messageText, groupId)) {
+        const msgId = event.message.msgId;
+        const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
+        if (recallResult.code === 1) {
+            await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，已被拦截并撤回' });
+            console.log(`群 ${groupId} 消息包含屏蔽词，已被拦截并撤回，msgId: ${msgId}`);
         } else {
-            console.log('Failed to recall message:', recallResponse);
+            await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，但撤回失败，请手动处理' });
+            console.error(`群 ${groupId} 消息包含屏蔽词，撤回失败，msgId: ${msgId}, 错误信息: ${recallResult.msg}`);
         }
     }
+
+    await handleAdminCommand(event);
 });
 
 subscription.onMessageInstruction((event) => {
