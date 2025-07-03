@@ -150,9 +150,9 @@ async function handleAdminCommand(event) {
     const message = event.message;
     const groupId = chat.chatId;
     const command = message.content.text.trim();
-    const msgId = message.msgId; // 确保获取正确的 msgId
+    const msgId = message.msgId;
 
-    // 先检测屏蔽词
+    // 检测屏蔽词
     if (hasBlockedWord(command)) {
         // 撤回消息
         const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
