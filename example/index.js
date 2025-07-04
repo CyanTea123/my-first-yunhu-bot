@@ -175,10 +175,21 @@ function saveGroupBlockedWords(groupBlockedWords) {
 }
 
 // 检查消息是否包含屏蔽词
-function hasBlockedWord(messageText, groupId) {
-    if (typeof messageText!== 'string') {
+function hasBlockedWord(event) {
+    const message = event.message;
+    // 检查 message 对象是否存在
+    if (!message) {
         return false;
     }
+    const contentType = message.contentType;
+    const messageText = message.content && message.content.text;
+
+    // 只处理文本消息
+    if (contentType!== 'text' || typeof messageText!== 'string') {
+        return false;
+    }
+
+    const groupId = event.chat.chatId;
     const blockedWords = loadBlockedWords();
     const groupBlockedWords = loadGroupBlockedWords();
     const groupConfig = groupBlockedWords[groupId];
@@ -296,24 +307,40 @@ async function handleAdminCommand(event) {
 }
 
 subscription.onMessageNormal(async (event) => {
-    console.log('Received a normal message:', event);
-    const userId = event.sender.senderId;
-    const messageText = event.message.content? event.message.content.text : null;
-    const groupId = event.chat.chatId;
+    const sender = event.sender;
+    const chat = event.chat;
+    const message = event.message;
+    const groupId = chat.chatId;
 
-    if (messageText && hasBlockedWord(messageText, groupId)) {
-        const msgId = event.message.msgId;
-        const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
-        if (recallResult.code === 1) {
-            await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，已被拦截并撤回' });
-            console.log(`群 ${groupId} 消息包含屏蔽词，已被拦截并撤回，msgId: ${msgId}`);
-        } else {
-            await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，但撤回失败，请手动处理' });
-            console.error(`群 ${groupId} 消息包含屏蔽词，撤回失败，msgId: ${msgId}, 错误信息: ${recallResult.msg}`);
-        }
+    if (!message ||!message.content ||!message.content.text) {
+        console.log('消息内容格式不正确，忽略处理');
+        return;
     }
+  
+    try {
+        console.log('Received a normal message:', event);
+        const userId = event.sender.senderId;
+        const message = event.message;
+        const messageText = message && message.content && message.content.text;
+        const groupId = event.chat.chatId;
 
-    await handleAdminCommand(event);
+        // 修正调用 hasBlockedWord 函数时传入的参数
+        if (messageText && hasBlockedWord(event)) {
+            const msgId = message.msgId;
+            const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
+            if (recallResult.code === 1) {
+                await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，已被拦截并撤回' });
+                console.log(`群 ${groupId} 消息包含屏蔽词，已被拦截并撤回，msgId: ${msgId}`);
+            } else {
+                await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，但撤回失败，请手动处理' });
+                console.error(`群 ${groupId} 消息包含屏蔽词，撤回失败，msgId: ${msgId}, 错误信息: ${recallResult.msg}`);
+            }
+        }
+
+        await handleAdminCommand(event);
+    } catch (error) {
+        console.error('处理消息时发生异常:', error);
+    }
 });
 
 subscription.onMessageInstruction((event) => {
