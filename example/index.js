@@ -3,11 +3,15 @@ const OpenApi = require('../lib/OpenApi');
 const Subscription = require('../lib/Subscription');
 const fs = require('fs');
 const path = require('path');
+const session = require('express-session');
+const bodyParser = require('body-parser');
+const crypto = require('crypto');
+const activeSessions = new Map(); // groupId -> timestamp
 
 const app = express();
 app.use(express.json());
 
-const TOKEN = '5155ecf9c1fb485595f2a6d295b5cba4';
+const TOKEN = '5155ecf9c1fb485595f2a6d295b5cba4'; // 看什么看，你没有自己的token啊
 const openApi = new OpenApi(TOKEN);
 const subscription = new Subscription();
 
@@ -311,33 +315,66 @@ subscription.onMessageNormal(async (event) => {
     const chat = event.chat;
     const message = event.message;
     const groupId = chat.chatId;
+    const userId = sender.senderId;
 
-    if (!message ||!message.content ||!message.content.text) {
+    if (!message || !message.content || !message.content.text) {
         console.log('消息内容格式不正确，忽略处理');
         return;
     }
-  
+
     try {
         console.log('Received a normal message:', event);
-        const userId = event.sender.senderId;
-        const message = event.message;
-        const messageText = message && message.content && message.content.text;
-        const groupId = event.chat.chatId;
 
-        // 修正调用 hasBlockedWord 函数时传入的参数
-        if (messageText && hasBlockedWord(event)) {
+        // 1. 强制检查公共黑名单（无论群是否启用独立黑名单）
+        const isInPublicBlacklist = isUserInPublicBlacklist(userId);
+        if (isInPublicBlacklist) {
             const msgId = message.msgId;
+            console.log(`检测到黑名单用户 ${userId} 发送消息，尝试撤回...`);
             const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
-            if (recallResult.code === 1) {
-                await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，已被拦截并撤回' });
-                console.log(`群 ${groupId} 消息包含屏蔽词，已被拦截并撤回，msgId: ${msgId}`);
+            
+            if (recallResult.code === 1) {  // 修正：code === 0 表示成功
+                await openApi.sendMessage(groupId, 'group', 'text', { 
+                    text: `用户 @${sender.senderNickname} (${userId}) 在公共黑名单中，消息已撤回。原因：${publicBlacklist.find(u => u.userId === userId)?.reason || '未知'}`
+                });
+                console.log(`群 ${groupId} 已撤回黑名单用户 ${userId} 的消息，msgId: ${msgId}`);
+                return; // 直接终止处理
             } else {
-                await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，但撤回失败，请手动处理' });
-                console.error(`群 ${groupId} 消息包含屏蔽词，撤回失败，msgId: ${msgId}, 错误信息: ${recallResult.msg}`);
+                console.error(`撤回失败！群 ${groupId} 用户 ${userId}，错误: ${recallResult.msg}`);
+                await openApi.sendMessage(groupId, 'group', 'text', { 
+                    text: `检测到黑名单用户 @${sender.senderNickname}，但撤回失败，请管理员手动处理！`
+                });
+                return;
             }
         }
 
+        // 2. 检查群独立黑名单（如果启用）
+        const enabledGroupBlacklists = loadEnabledGroupBlacklists();
+        if (enabledGroupBlacklists.includes(groupId)) {
+            const isInGroupBlacklist = isUserInGroupBlacklist(userId, groupId);
+            if (isInGroupBlacklist) {
+                const msgId = message.msgId;
+                const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
+                if (recallResult.code === 1) {
+                    await openApi.sendMessage(groupId, 'group', 'text', { 
+                        text: `用户 @${sender.senderNickname} 在本群黑名单中，消息已撤回。`
+                    });
+                    return;
+                }
+            }
+        }
+
+        // 3. 检查屏蔽词
+        if (hasBlockedWord(event)) {
+            const msgId = message.msgId;
+            const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
+            if (recallResult.code === 1) {
+                await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，已被撤回。' });
+            }
+        }
+
+        // 4. 处理管理员命令
         await handleAdminCommand(event);
+
     } catch (error) {
         console.error('处理消息时发生异常:', error);
     }
@@ -354,6 +391,210 @@ subscription.onGroupJoin((event) => {
 
 subscription.onGroupLeave((event) => {
     console.log('A user left the group:', event);
+});
+
+app.use((req, res, next) => {
+    globalReq = req;
+    next();
+});
+
+app.use(express.static(path.join(__dirname, 'public')));
+
+app.use(session({
+    secret: 'your-strong-secret-here', // 改为强密码
+    resave: true,                      // 改为true
+    saveUninitialized: false,          // 改为false
+    cookie: { 
+        secure: false,                 // 开发用false，生产用true
+        maxAge: 24 * 60 * 60 * 1000,  // 24小时有效期
+        httpOnly: true
+    }
+}));
+
+// 验证码存储
+const verificationCodes = new Map(); // key: groupId, value: {code, timestamp}
+
+// 生成随机验证码
+function generateVerificationCode() {
+    return crypto.randomBytes(3).toString('hex').toUpperCase();
+}
+
+// 验证码管理路由
+app.get('/api/generate-code', (req, res) => {
+    const groupId = req.query.groupId;
+    console.log('生成验证码请求，群ID:', groupId); // 调试日志
+    
+    if (!groupId) {
+        console.log('缺少群ID参数');
+        return res.status(200).json({ code: 0, msg: '缺少群ID参数' });
+    }
+    
+    const code = generateVerificationCode();
+    verificationCodes.set(groupId, {
+        code,
+        timestamp: Date.now()
+    });
+    
+    console.log('生成的验证码:', code, '当前存储的验证码:', verificationCodes); // 调试日志
+    
+    // 5分钟后过期
+    setTimeout(() => {
+        verificationCodes.delete(groupId);
+    }, 5 * 60 * 1000);
+    
+    res.status(200).json({ code: 1, msg: '验证码生成成功', data: { code } });
+});
+
+// 验证验证码
+app.post('/api/verify-code', (req, res) => {
+    const { groupId, code } = req.body;
+    if (!groupId || !code) {
+        return res.status(200).json({ code: 0, msg: '缺少必要参数' }); // 失败返回code=0
+    }
+    
+    const storedCode = verificationCodes.get(groupId);
+    if (!storedCode || storedCode.code !== code.toUpperCase()) {
+        return res.status(200).json({ code: 0, msg: '验证码无效或已过期' });
+    }
+    
+    // 验证成功，创建会话
+    req.session.verifiedGroups = req.session.verifiedGroups || [];
+    if (!req.session.verifiedGroups.includes(groupId)) {
+        req.session.verifiedGroups.push(groupId);
+    }
+    
+    verificationCodes.delete(groupId);
+    res.status(200).json({ code: 1, msg: '验证成功' }); // 成功返回code=1
+});
+
+// 检查会话状态
+app.get('/api/check-session', (req, res) => {
+    const groupId = req.query.groupId;
+    console.log('检查会话，群ID:', groupId, '活跃会话:', activeSessions);
+    
+    if (!groupId) {
+        return res.status(200).json({ code: 0, msg: '缺少群ID参数' });
+    }
+    
+    const isVerified = activeSessions.has(groupId);
+    console.log('验证状态:', isVerified);
+    
+    res.status(200).json({ 
+        code: isVerified ? 1 : 0,
+        isVerified,
+        msg: isVerified ? '已验证' : '未验证'
+    });
+});
+
+// 获取群屏蔽词配置
+app.get('/api/group-blocked-words', (req, res) => {
+    const groupId = req.query.groupId;
+    if (!groupId) {
+        return res.status(400).json({ error: '缺少群ID参数' });
+    }
+    
+    if (!req.session.verifiedGroups || !req.session.verifiedGroups.includes(groupId)) {
+        return res.status(403).json({ error: '未验证权限' });
+    }
+    
+    const blockedWords = loadBlockedWords();
+    const groupBlockedWords = loadGroupBlockedWords();
+    const groupConfig = groupBlockedWords[groupId] || { allofthem: false, words: [] };
+    
+    res.json({
+        allBlockedWords: blockedWords,
+        disabledWords: groupConfig.words,
+        isDisabled: groupConfig.allofthem
+    });
+});
+
+// 更新群屏蔽词配置
+app.post('/api/update-group-blocked-words', (req, res) => {
+    const { groupId, disabledWords, isDisabled } = req.body;
+    if (!groupId) {
+        return res.status(400).json({ error: '缺少群ID参数' });
+    }
+    
+    if (!req.session.verifiedGroups || !req.session.verifiedGroups.includes(groupId)) {
+        return res.status(403).json({ error: '未验证权限' });
+    }
+    
+    const groupBlockedWords = loadGroupBlockedWords();
+    groupBlockedWords[groupId] = {
+        allofthem: isDisabled,
+        words: disabledWords || []
+    };
+    
+    saveGroupBlockedWords(groupBlockedWords);
+    res.json({ success: true });
+});
+
+// 获取群黑名单
+app.get('/api/group-blacklist', (req, res) => {
+    const groupId = req.query.groupId;
+    if (!groupId) {
+        return res.status(400).json({ error: '缺少群ID参数' });
+    }
+    
+    if (!req.session.verifiedGroups || !req.session.verifiedGroups.includes(groupId)) {
+        return res.status(403).json({ error: '未验证权限' });
+    }
+    
+    const enabledGroupBlacklists = loadEnabledGroupBlacklists();
+    const useGroupBlacklist = enabledGroupBlacklists.includes(groupId);
+    const groupBlacklist = useGroupBlacklist ? loadGroupBlacklist(groupId) : [];
+    
+    res.json({
+        useGroupBlacklist,
+        blacklist: groupBlacklist
+    });
+});
+
+// 更新群黑名单
+app.post('/api/update-group-blacklist', (req, res) => {
+    const { groupId, blacklist, useGroupBlacklist } = req.body;
+    if (!groupId) {
+        return res.status(400).json({ error: '缺少群ID参数' });
+    }
+    
+    if (!req.session.verifiedGroups || !req.session.verifiedGroups.includes(groupId)) {
+        return res.status(403).json({ error: '未验证权限' });
+    }
+    
+    // 更新独立黑名单启用状态
+    let enabledGroupBlacklists = loadEnabledGroupBlacklists();
+    if (useGroupBlacklist && !enabledGroupBlacklists.includes(groupId)) {
+        enabledGroupBlacklists.push(groupId);
+        saveEnabledGroupBlacklists(enabledGroupBlacklists);
+    } else if (!useGroupBlacklist && enabledGroupBlacklists.includes(groupId)) {
+        enabledGroupBlacklists = enabledGroupBlacklists.filter(id => id !== groupId);
+        saveEnabledGroupBlacklists(enabledGroupBlacklists);
+    }
+    
+    // 保存黑名单数据
+    if (useGroupBlacklist) {
+        saveGroupBlacklist(groupId, blacklist);
+    }
+    
+    res.json({ success: true });
+});
+
+app.get('/login', (req, res) => {
+    res.sendFile(path.join(__dirname, 'views/login.html'));
+});
+
+// 管理面板
+app.get('/manage', (req, res) => {
+    const groupId = req.query.groupId;
+    if (!groupId) {
+        return res.status(400).send('缺少群ID参数');
+    }
+    
+    if (!req.session.verifiedGroups || !req.session.verifiedGroups.includes(groupId)) {
+        return res.redirect(`/login?groupId=${groupId}`);
+    }
+    
+    res.sendFile(path.join(__dirname, 'public/index.html'));
 });
 
 app.post('/sub', (req, res) => {
