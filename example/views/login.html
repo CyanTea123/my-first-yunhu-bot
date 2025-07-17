@@ -1,0 +1,24 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Vio网页管理面板 - 登录</title>
+    <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+    <div class="login-container">
+        <h1>Vio网页管理面板</h1>
+        <div id="group-info"></div>
+        <div class="verification-section">
+    <h2>验证身份</h2>
+    <div id="verification-code" class="code-display"></div>
+    <button id="generate-code-btn" type="button">生成新验证码</button>
+    <p>然后在群内发送: <code>/验证 &lt;上面的验证码&gt;</code></p>
+    <button id="check-verification-btn" type="button">我已发送验证码</button>
+    <div id="status-message" class="status-message"></div>
+</div>
+    </div>
+    <script src="/script.js"></script>
+</body>
+</html>
