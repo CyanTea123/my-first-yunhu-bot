@@ -1,4 +1,3 @@
-const express = require('express');
 const OpenApi = require('../lib/OpenApi');
 const Subscription = require('../lib/Subscription');
 const fs = require('fs');
@@ -6,603 +5,339 @@ const path = require('path');
 const session = require('express-session');
 const bodyParser = require('body-parser');
 const crypto = require('crypto');
+const chokidar = require('chokidar');
 const activeSessions = new Map(); // groupId -> timestamp
 
 const app = express();
 app.use(express.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+app.use(express.static(path.join(__dirname, 'public')));
+app.use(session({
+    secret: 'vio-bot-session-secret',
+    resave: false,
+    saveUninitialized: true,
+    cookie: { maxAge: 300000 } // 5分钟会话有效期
+}));
 
+// 配置
 const TOKEN = '5155ecf9c1fb485595f2a6d295b5cba4'; // 看什么看，你没有自己的token啊
 const openApi = new OpenApi(TOKEN);
 const subscription = new Subscription();
+const groupConfigsDir = path.join(__dirname, 'group_configs');
+fs.mkdirSync(groupConfigsDir, { recursive: true });
 
-// 加载公共黑名单
-const blacklistFilePath = path.join(__dirname, 'blacklist.json');
-let publicBlacklist = [];
-try {
-    if (fs.existsSync(blacklistFilePath)) {
-        const blacklistData = fs.readFileSync(blacklistFilePath, 'utf8');
-        publicBlacklist = JSON.parse(blacklistData);
-        console.log('公共黑名单加载成功');
-    } else {
-        console.log('公共黑名单文件不存在');
+// 群配置文件路径处理
+const getGroupConfigPath = (groupId) => path.join(groupConfigsDir, `${groupId}.json`);
+
+// 初始化群配置
+function initNewGroup(groupId) {
+    const configPath = getGroupConfigPath(groupId);
+    if (!fs.existsSync(configPath)) {
+        const defaultConfig = {
+            usePublicBlacklist: true,
+            useGroupBlacklist: false,
+            blacklist: [],
+            blockedWords: {
+                disabled: false,
+                disabledWords: [],
+                enabledWords: []
+            }
+        };
+        fs.writeFileSync(configPath, JSON.stringify(defaultConfig, null, 2));
+        console.log(`已为群 ${groupId} 创建默认配置`);
     }
-} catch (error) {
-    console.error('加载公共黑名单时出错:', error);
 }
 
-// 群黑名单配置
-const groupBlacklistConfig = {};
-
-// 启用独立黑名单的群 ID 文件路径
-const enabledGroupBlacklistFilePath = path.join(__dirname, 'enabled_group_blacklists.json');
-
-// 加载启用独立黑名单的群 ID
-function loadEnabledGroupBlacklists() {
+// 配置加载与保存
+function loadGroupConfig(groupId) {
+    const configPath = path.join(groupConfigsDir, `${groupId}.json`);
+    
     try {
-        if (fs.existsSync(enabledGroupBlacklistFilePath)) {
-            const data = fs.readFileSync(enabledGroupBlacklistFilePath, 'utf8');
-            console.log('启用独立黑名单的群 ID 加载成功');
-            return JSON.parse(data);
+        if (fs.existsSync(configPath)) {
+            const rawData = fs.readFileSync(configPath, 'utf8');
+            const config = JSON.parse(rawData);
+            
+            // 确保配置结构完整
+            return {
+                usePublicBlacklist: config.usePublicBlacklist !== false,
+                useGroupBlacklist: config.useGroupBlacklist === true,
+                blacklist: Array.isArray(config.blacklist) ? config.blacklist : [],
+                blockedWords: {
+                    disabled: config.blockedWords?.disabled === true,
+                    disabledWords: Array.isArray(config.blockedWords?.disabledWords) 
+                        ? config.blockedWords.disabledWords 
+                        : []
+                }
+            };
         }
-        console.log('启用独立黑名单的群 ID 文件不存在');
-        return [];
     } catch (error) {
-        console.error('加载启用独立黑名单的群 ID 时出错:', error);
-        return [];
+        console.error(`加载群 ${groupId} 配置失败:`, error);
     }
+    
+    // 返回默认配置
+    return {
+        usePublicBlacklist: true,
+        useGroupBlacklist: false,
+        blacklist: [],
+        blockedWords: {
+            disabled: false,
+            disabledWords: []
+        }
+    };
 }
 
-// 保存启用独立黑名单的群 ID
-function saveEnabledGroupBlacklists(groupIds) {
+function saveGroupConfig(groupId, config) {
     try {
-        fs.writeFileSync(enabledGroupBlacklistFilePath, JSON.stringify(groupIds, null, 2));
-        console.log('启用独立黑名单的群 ID 保存成功');
+        fs.writeFileSync(getGroupConfigPath(groupId), JSON.stringify(config, null, 2));
+        console.log(`群 ${groupId} 配置已保存`);
     } catch (error) {
-        console.error('保存启用独立黑名单的群 ID 时出错:', error);
+        console.error(`保存群 ${groupId} 配置失败:`, error);
     }
 }
 
-// 加载群独立黑名单
+// 黑名单管理
 function loadGroupBlacklist(groupId) {
-    const groupBlacklistFilePath = path.join(__dirname, `${groupId}.json`);
-    try {
-        if (fs.existsSync(groupBlacklistFilePath)) {
-            const blacklistData = fs.readFileSync(groupBlacklistFilePath, 'utf8');
-            console.log(`群 ${groupId} 独立黑名单加载成功`);
-            return JSON.parse(blacklistData);
-        }
-        console.log(`群 ${groupId} 独立黑名单文件不存在`);
-        return [];
-    } catch (error) {
-        console.error(`加载群 ${groupId} 独立黑名单时出错:`, error);
-        return [];
-    }
+    const config = loadGroupConfig(groupId);
+    return config.blacklist || [];
 }
 
-// 保存群独立黑名单
-function saveGroupBlacklist(groupId, blacklist) {
-    const groupBlacklistFilePath = path.join(__dirname, `${groupId}.json`);
-    try {
-        fs.writeFileSync(groupBlacklistFilePath, JSON.stringify(blacklist, null, 2));
-        console.log(`群 ${groupId} 独立黑名单保存成功`);
-    } catch (error) {
-        console.error(`保存群 ${groupId} 独立黑名单时出错:`, error);
-    }
-}
-
-// 从独立黑名单中移除用户
-function removeUserFromGroupBlacklist(groupId, userId) {
-    const groupBlacklist = loadGroupBlacklist(groupId);
-    const newBlacklist = groupBlacklist.filter(user => user.userId!== userId);
-    saveGroupBlacklist(groupId, newBlacklist);
-    return newBlacklist;
-}
-
-// 检查用户是否在公共黑名单中
-function isUserInPublicBlacklist(userId) {
-    const isInBlacklist = publicBlacklist.some(user => user.userId === userId);
-    console.log(`用户 ${userId} 是否在公共黑名单中: ${isInBlacklist}`);
-    return isInBlacklist;
-}
-
-// 检查用户是否在群独立黑名单中
-function isUserInGroupBlacklist(userId, groupId) {
-    const enabledGroupBlacklists = loadEnabledGroupBlacklists();
-    if (enabledGroupBlacklists.includes(groupId)) {
-        const groupBlacklist = loadGroupBlacklist(groupId);
-        const isInBlacklist = groupBlacklist.some(user => user.userId === userId);
-        console.log(`用户 ${userId} 是否在群 ${groupId} 独立黑名单中: ${isInBlacklist}`);
-        return isInBlacklist;
-    }
-    console.log(`群 ${groupId} 未启用独立黑名单，用户 ${userId} 不在群独立黑名单中`);
-    return false;
-}
-
-// 动态加载屏蔽词列表
+// 屏蔽词管理
 function loadBlockedWords() {
-    const blockedWordsFilePath = path.join(__dirname, 'blocked_words.json');
-    let blockedWords = [];
+    const blockedWordsPath = path.join(__dirname, 'blocked_words.json');
     try {
-        if (fs.existsSync(blockedWordsFilePath)) {
-            const blockedWordsData = fs.readFileSync(blockedWordsFilePath, 'utf8');
-            blockedWords = JSON.parse(blockedWordsData);
-            console.log('屏蔽词列表加载成功');
-        } else {
-            console.log('屏蔽词列表文件不存在');
-        }
-    } catch (error) {
-        console.error('加载屏蔽词列表时出错:', error);
-    }
-    return blockedWords;
-}
-
-// 群自定义禁用屏蔽词文件路径
-const groupBlockedWordsFilePath = path.join(__dirname, 'group_blocked_words.json');
-
-// 加载群自定义禁用屏蔽词
-function loadGroupBlockedWords() {
-    try {
-        if (fs.existsSync(groupBlockedWordsFilePath)) {
-            const data = fs.readFileSync(groupBlockedWordsFilePath, 'utf8');
-            console.log('群自定义禁用屏蔽词加载成功');
-            return JSON.parse(data);
-        }
-        console.log('群自定义禁用屏蔽词文件不存在');
-        return {};
-    } catch (error) {
-        console.error('加载群自定义禁用屏蔽词时出错:', error);
-        return {};
-    }
-}
-
-// 保存群自定义禁用屏蔽词
-function saveGroupBlockedWords(groupBlockedWords) {
-    try {
-        const chunkSize = 100; // 每批保存的数据量
-        const keys = Object.keys(groupBlockedWords);
-        for (let i = 0; i < keys.length; i += chunkSize) {
-            const chunkKeys = keys.slice(i, i + chunkSize);
-            const chunkData = {};
-            chunkKeys.forEach(key => {
-                chunkData[key] = groupBlockedWords[key];
-            });
-
-            const existingData = fs.existsSync(groupBlockedWordsFilePath)? JSON.parse(fs.readFileSync(groupBlockedWordsFilePath, 'utf8')) : {};
-            const newData = { ...existingData, ...chunkData };
-
-            fs.writeFileSync(groupBlockedWordsFilePath, JSON.stringify(newData, null, 2));
-        }
-        console.log('群自定义禁用屏蔽词保存成功');
-    } catch (error) {
-        console.error('保存群自定义禁用屏蔽词时出错:', error);
-    }
-}
-
-// 检查消息是否包含屏蔽词
-function hasBlockedWord(event) {
-    const message = event.message;
-    // 检查 message 对象是否存在
-    if (!message) {
-        return false;
-    }
-    const contentType = message.contentType;
-    const messageText = message.content && message.content.text;
-
-    // 只处理文本消息
-    if (contentType!== 'text' || typeof messageText!== 'string') {
-        return false;
-    }
-
-    const groupId = event.chat.chatId;
-    const blockedWords = loadBlockedWords();
-    const groupBlockedWords = loadGroupBlockedWords();
-    const groupConfig = groupBlockedWords[groupId];
-
-    if (groupConfig && groupConfig.allofthem) {
-        return false; // 群屏蔽词判断已关闭
-    }
-
-    const disabledWords = groupConfig? groupConfig.words : [];
-    const filteredBlockedWords = blockedWords.filter(word =>!disabledWords.includes(word));
-
-    const hasBlocked = filteredBlockedWords.some(word => messageText.includes(word));
-    console.log('屏蔽词已检测');
-    return hasBlocked;
-}
-
-// 处理群管命令
-async function handleAdminCommand(event) {
-    const sender = event.sender;
-    const chat = event.chat;
-    const message = event.message;
-    const groupId = chat.chatId;
-    const command = message.content.text.trim();
-
-    // 检查消息是否以 / 开头
-    if (!command.startsWith('/')) {
-        console.log(`群 ${groupId} 收到非指令消息: ${command}`);
-        return;
-    }
-
-    if (sender.senderUserLevel === 'owner' || sender.senderUserLevel === 'administrator') {
-        if (command === '/启用公共黑名单') {
-            groupBlacklistConfig[groupId] = { ...groupBlacklistConfig[groupId], usePublicBlacklist: true };
-            await openApi.sendMessage(groupId, 'group', 'text', { text: '已启用公共黑名单' });
-            console.log(`群 ${groupId} 已启用公共黑名单`);
-        } else if (command === '/禁用公共黑名单') {
-            groupBlacklistConfig[groupId] = { ...groupBlacklistConfig[groupId], usePublicBlacklist: false };
-            await openApi.sendMessage(groupId, 'group', 'text', { text: '已禁用公共黑名单' });
-            console.log(`群 ${groupId} 已禁用公共黑名单`);
-        } else if (command === '/启用独立黑名单') {
-            groupBlacklistConfig[groupId] = { ...groupBlacklistConfig[groupId], useGroupBlacklist: true };
-            const enabledGroupBlacklists = loadEnabledGroupBlacklists();
-            if (!enabledGroupBlacklists.includes(groupId)) {
-                enabledGroupBlacklists.push(groupId);
-                saveEnabledGroupBlacklists(enabledGroupBlacklists);
-            }
-            await openApi.sendMessage(groupId, 'group', 'text', { text: '已启用独立黑名单' });
-            console.log(`群 ${groupId} 已启用独立黑名单`);
-        } else if (command === '/禁用独立黑名单') {
-            groupBlacklistConfig[groupId] = { ...groupBlacklistConfig[groupId], useGroupBlacklist: false };
-            const enabledGroupBlacklists = loadEnabledGroupBlacklists();
-            const newEnabledGroupBlacklists = enabledGroupBlacklists.filter(id => id!== groupId);
-            saveEnabledGroupBlacklists(newEnabledGroupBlacklists);
-            await openApi.sendMessage(groupId, 'group', 'text', { text: '已禁用独立黑名单' });
-            console.log(`群 ${groupId} 已禁用独立黑名单`);
-        } else if (command.startsWith('/添加独立黑名单')) {
-            const parts = command.split(' ');
-            if (parts.length >= 3) {
-                const userId = parts[1];
-                const reason = parts.slice(2).join(' ');
-                const groupBlacklist = loadGroupBlacklist(groupId);
-                groupBlacklist.push({ userId, reason });
-                saveGroupBlacklist(groupId, groupBlacklist);
-                await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 添加到独立黑名单，原因：${reason}` });
-                console.log(`已将用户 ${userId} 添加到群 ${groupId} 独立黑名单，原因：${reason}`);
+        if (fs.existsSync(blockedWordsPath)) {
+            const data = fs.readFileSync(blockedWordsPath, 'utf8');
+            // 支持数组或逗号分隔的字符串
+            if (data.startsWith('[')) {
+                return JSON.parse(data);
             } else {
-                await openApi.sendMessage(groupId, 'group', 'text', { text: '命令格式错误，正确格式：/添加独立黑名单 <用户 ID> <原因>' });
-                console.log(`群 ${groupId} 添加独立黑名单命令格式错误`);
-            }
-        } else if (command.startsWith('/移出独立黑名单')) {
-            const parts = command.split(' ');
-            if (parts.length === 2) {
-                const userId = parts[1];
-                const newBlacklist = removeUserFromGroupBlacklist(groupId, userId);
-                if (newBlacklist.length < loadGroupBlacklist(groupId).length) {
-                    await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 移出独立黑名单` });
-                    console.log(`已将用户 ${userId} 移出群 ${groupId} 独立黑名单`);
-                } else {
-                    await openApi.sendMessage(groupId, 'group', 'text', { text: `已将用户 ${userId} 移出独立黑名单` });
-                    console.log(`已将用户 ${userId} 移出群 ${groupId} 独立黑名单`);
-                }
-            } else {
-                await openApi.sendMessage(groupId, 'group', 'text', { text: '命令格式错误，正确格式：/移出独立黑名单 <用户 ID>' });
-                console.log(`群 ${groupId} 移出独立黑名单命令格式错误`);
-            }
-        } else if (command.startsWith('/禁用群屏蔽词')) {
-            const parts = command.split(' ');
-            if (parts.length === 2) {
-                const word = parts[1];
-                const groupBlockedWords = loadGroupBlockedWords();
-                if (!groupBlockedWords[groupId]) {
-                    groupBlockedWords[groupId] = { allofthem: false, words: [] };
-                }
-                if (word === 'allofthem') {
-                    groupBlockedWords[groupId].allofthem = true;
-                    await openApi.sendMessage(groupId, 'group', 'text', { text: '已关闭该群的屏蔽词判断' });
-                    console.log(`群 ${groupId} 已关闭屏蔽词判断`);
-                } else {
-                    if (!groupBlockedWords[groupId].words.includes(word)) {
-                        groupBlockedWords[groupId].words.push(word);
-                        await openApi.sendMessage(groupId, 'group', 'text', { text: `已禁用屏蔽词 "${word}"` });
-                        console.log(`群 ${groupId} 已禁用屏蔽词 "${word}"`);
-                    } else {
-                        await openApi.sendMessage(groupId, 'group', 'text', { text: `屏蔽词 "${word}" 已被禁用` });
-                        console.log(`群 ${groupId} 屏蔽词 "${word}" 已被禁用`);
-                    }
-                }
-                saveGroupBlockedWords(groupBlockedWords);
+                return data.split(',')
+                    .map(word => word.trim())
+                    .filter(word => word.length > 0);
             }
         }
-    } else {
-        await openApi.sendMessage(groupId, 'group', 'text', { text: '你没有权限执行此命令' });
-        console.log(`群 ${groupId} 非管理员尝试执行群管命令`);
+        return [];
+    } catch (error) {
+        console.error('加载屏蔽词列表失败:', error);
+        return [];
     }
+}
+
+subscription.onBotSetting(async (event) => {
+    try {
+        const { groupId, settingJson } = event;
+        console.log(`🛠️ 收到群 ${groupId} 的设置更新`);
+
+        const settings = JSON.parse(settingJson);
+
+        // 处理黑名单（支持逗号分隔或换行分隔）
+        const processIds = (input) => {
+            if (!input) return [];
+            // 先按逗号分割，再按换行分割，最后过滤空值
+            return input.split(/[,;\n]/)
+                .flatMap(part => part.split('\n'))
+                .map(id => id.trim())
+                .filter(id => id.length > 0);
+        };
+
+        // 处理屏蔽词（支持逗号分隔或换行分隔）
+        const processWords = (input) => {
+            if (!input) return [];
+            return input.split(/[,;\n]/)
+                .flatMap(part => part.split('\n'))
+                .map(word => word.trim())
+                .filter(word => word.length > 0);
+        };
+
+        const config = {
+            usePublicBlacklist: settings.lehzep?.value !== false,
+            useGroupBlacklist: settings.jsgqio?.value?.trim() !== '',
+            blacklist: processIds(settings.jsgqio?.value),
+            blockedWords: {
+                disabled: settings.yezkdo?.value === false,
+                disabledWords: processWords(settings.pduhoq?.value)
+            }
+        };
+        
+        saveGroupConfig(groupId, config);
+        console.log(`✅ 群 ${groupId} 配置已更新`, {
+            ...config,
+            blacklist: config.blacklist.join(','), // 日志中显示合并后的结果
+            blockedWords: {
+                ...config.blockedWords,
+                disabledWords: config.blockedWords.disabledWords.join(',')
+            }
+        });
+    } catch (error) {
+        console.error('处理设置事件时出错:', error);
+    }
+});
+
+// 配置热加载
+const configCache = new Map();
+const CACHE_TTL = 500;
+
+function initConfigWatchers() {
+    const watcher = chokidar.watch(groupConfigsDir, { persistent: true, ignoreInitial: true });
+    
+    watcher.on('change', (filePath) => {
+        const fileName = path.basename(filePath);
+        const groupIdMatch = fileName.match(/^(\d+)(_blacklist)?\.json$/);
+        if (groupIdMatch) {
+            const groupId = groupIdMatch[1];
+            configCache.delete(groupId);
+            console.log(`群 ${groupId} 配置已更新，缓存已清理`);
+        }
+    });
+    
+    console.log('配置热加载监听已启动');
 }
 
 subscription.onMessageNormal(async (event) => {
-    const sender = event.sender;
-    const chat = event.chat;
-    const message = event.message;
-    const groupId = chat.chatId;
-    const userId = sender.senderId;
-
-    if (!message || !message.content || !message.content.text) {
-        console.log('消息内容格式不正确，忽略处理');
-        return;
-    }
-
     try {
-        console.log('Received a normal message:', event);
+        const { sender, chat, message } = event;
+        const { chatId: groupId, chatType } = chat;
+        const { msgId, content } = message;
+        const senderId = sender.senderId;
+        const messageText = content?.text || '';
 
-        // 1. 强制检查公共黑名单（无论群是否启用独立黑名单）
-        const isInPublicBlacklist = isUserInPublicBlacklist(userId);
-        if (isInPublicBlacklist) {
-            const msgId = message.msgId;
-            console.log(`检测到黑名单用户 ${userId} 发送消息，尝试撤回...`);
-            const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
+        console.log(`[消息处理开始] 群: ${groupId} 发送者: ${senderId} 内容: "${messageText}"`);
+
+        // 加载最新配置
+        const config = loadGroupConfig(groupId);
+        console.log('当前群配置:', JSON.stringify(config, null, 2));
+
+        // 1. 检查黑名单用户
+        if (config.useGroupBlacklist && config.blacklist.includes(senderId)) {
+            console.log(`⚠️ 检测到黑名单用户 ${senderId} 发送的消息`);
             
-            if (recallResult.code === 1) {  // 修正：code === 0 表示成功
-                await openApi.sendMessage(groupId, 'group', 'text', { 
-                    text: `用户 @${sender.senderNickname} (${userId}) 在公共黑名单中，消息已撤回。原因：${publicBlacklist.find(u => u.userId === userId)?.reason || '未知'}`
-                });
-                console.log(`群 ${groupId} 已撤回黑名单用户 ${userId} 的消息，msgId: ${msgId}`);
-                return; // 直接终止处理
+            const recallResult = await openApi.recallMessage(msgId, groupId, chatType);
+            console.log('撤回结果:', recallResult);
+            
+            if (recallResult.code === 1) {
+                console.log(`✅ 成功撤回黑名单用户 ${senderId} 的消息`);
+                return;
             } else {
-                console.error(`撤回失败！群 ${groupId} 用户 ${userId}，错误: ${recallResult.msg}`);
-                await openApi.sendMessage(groupId, 'group', 'text', { 
-                    text: `检测到黑名单用户 @${sender.senderNickname}，但撤回失败，请管理员手动处理！`
-                });
+                console.error(`❌ 撤回失败: ${recallResult.msg}`);
+                // 即使撤回失败也不再处理该消息
                 return;
             }
         }
 
-        // 2. 检查群独立黑名单（如果启用）
-        const enabledGroupBlacklists = loadEnabledGroupBlacklists();
-        if (enabledGroupBlacklists.includes(groupId)) {
-            const isInGroupBlacklist = isUserInGroupBlacklist(userId, groupId);
-            if (isInGroupBlacklist) {
-                const msgId = message.msgId;
-                const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
+        // 2. 检查屏蔽词
+        if (!config.blockedWords.disabled && messageText) {
+            const publicBlockedWords = loadBlockedWords();
+            const effectiveBlockedWords = publicBlockedWords.filter(
+                word => !config.blockedWords.disabledWords.includes(word)
+            );
+
+            const foundWord = effectiveBlockedWords.find(word => 
+                messageText.includes(word)
+            );
+
+            if (foundWord) {
+                console.log(`⚠️ 检测到屏蔽词 "${foundWord}"`);
+                
+                const recallResult = await openApi.recallMessage(msgId, groupId, chatType);
+                console.log('撤回结果:', recallResult);
+                
                 if (recallResult.code === 1) {
-                    await openApi.sendMessage(groupId, 'group', 'text', { 
-                        text: `用户 @${sender.senderNickname} 在本群黑名单中，消息已撤回。`
-                    });
+                    console.log(`✅ 成功撤回包含屏蔽词的消息`);
                     return;
                 }
             }
         }
 
-        // 3. 检查屏蔽词
-        if (hasBlockedWord(event)) {
-            const msgId = message.msgId;
-            const recallResult = await openApi.recallMessage(msgId, groupId, 'group');
-            if (recallResult.code === 1) {
-                await openApi.sendMessage(groupId, 'group', 'text', { text: '消息包含屏蔽词，已被撤回。' });
-            }
-        }
-
-        // 4. 处理管理员命令
-        await handleAdminCommand(event);
-
+        console.log(`✅ 消息检查通过: "${messageText}"`);
     } catch (error) {
-        console.error('处理消息时发生异常:', error);
+        console.error('处理消息时发生错误:', error);
     }
 });
 
-subscription.onMessageInstruction((event) => {
-    console.log(event);
-    openApi.sendMarkdownMessage(event.sender.senderId, 'user', { text: 'Hello! This is a *markdown* message response.' });
-});
-
-subscription.onGroupJoin((event) => {
-    console.log('A user joined the group:', event);
-});
-
-subscription.onGroupLeave((event) => {
-    console.log('A user left the group:', event);
-});
-
-app.use((req, res, next) => {
-    globalReq = req;
-    next();
-});
-
-app.use(express.static(path.join(__dirname, 'public')));
-
-app.use(session({
-    secret: 'your-strong-secret-here', // 改为强密码
-    resave: true,                      // 改为true
-    saveUninitialized: false,          // 改为false
-    cookie: { 
-        secure: false,                 // 开发用false，生产用true
-        maxAge: 24 * 60 * 60 * 1000,  // 24小时有效期
-        httpOnly: true
-    }
-}));
-
-// 验证码存储
-const verificationCodes = new Map(); // key: groupId, value: {code, timestamp}
-
-// 生成随机验证码
-function generateVerificationCode() {
-    return crypto.randomBytes(3).toString('hex').toUpperCase();
-}
-
-// 验证码管理路由
-app.get('/api/generate-code', (req, res) => {
-    const groupId = req.query.groupId;
-    console.log('生成验证码请求，群ID:', groupId); // 调试日志
-    
-    if (!groupId) {
-        console.log('缺少群ID参数');
-        return res.status(200).json({ code: 0, msg: '缺少群ID参数' });
-    }
-    
-    const code = generateVerificationCode();
-    verificationCodes.set(groupId, {
-        code,
-        timestamp: Date.now()
-    });
-    
-    console.log('生成的验证码:', code, '当前存储的验证码:', verificationCodes); // 调试日志
-    
-    // 5分钟后过期
-    setTimeout(() => {
-        verificationCodes.delete(groupId);
-    }, 5 * 60 * 1000);
-    
-    res.status(200).json({ code: 1, msg: '验证码生成成功', data: { code } });
-});
-
-// 验证验证码
-app.post('/api/verify-code', (req, res) => {
-    const { groupId, code } = req.body;
-    if (!groupId || !code) {
-        return res.status(200).json({ code: 0, msg: '缺少必要参数' }); // 失败返回code=0
-    }
-    
-    const storedCode = verificationCodes.get(groupId);
-    if (!storedCode || storedCode.code !== code.toUpperCase()) {
-        return res.status(200).json({ code: 0, msg: '验证码无效或已过期' });
-    }
-    
-    // 验证成功，创建会话
-    req.session.verifiedGroups = req.session.verifiedGroups || [];
-    if (!req.session.verifiedGroups.includes(groupId)) {
-        req.session.verifiedGroups.push(groupId);
-    }
-    
-    verificationCodes.delete(groupId);
-    res.status(200).json({ code: 1, msg: '验证成功' }); // 成功返回code=1
-});
-
-// 检查会话状态
-app.get('/api/check-session', (req, res) => {
-    const groupId = req.query.groupId;
-    console.log('检查会话，群ID:', groupId, '活跃会话:', activeSessions);
-    
-    if (!groupId) {
-        return res.status(200).json({ code: 0, msg: '缺少群ID参数' });
-    }
-    
-    const isVerified = activeSessions.has(groupId);
-    console.log('验证状态:', isVerified);
-    
-    res.status(200).json({ 
-        code: isVerified ? 1 : 0,
-        isVerified,
-        msg: isVerified ? '已验证' : '未验证'
-    });
-});
-
-// 获取群屏蔽词配置
-app.get('/api/group-blocked-words', (req, res) => {
-    const groupId = req.query.groupId;
-    if (!groupId) {
-        return res.status(400).json({ error: '缺少群ID参数' });
-    }
-    
-    if (!req.session.verifiedGroups || !req.session.verifiedGroups.includes(groupId)) {
-        return res.status(403).json({ error: '未验证权限' });
-    }
-    
-    const blockedWords = loadBlockedWords();
-    const groupBlockedWords = loadGroupBlockedWords();
-    const groupConfig = groupBlockedWords[groupId] || { allofthem: false, words: [] };
-    
-    res.json({
-        allBlockedWords: blockedWords,
-        disabledWords: groupConfig.words,
-        isDisabled: groupConfig.allofthem
-    });
-});
-
-// 更新群屏蔽词配置
-app.post('/api/update-group-blocked-words', (req, res) => {
-    const { groupId, disabledWords, isDisabled } = req.body;
-    if (!groupId) {
-        return res.status(400).json({ error: '缺少群ID参数' });
-    }
-    
-    if (!req.session.verifiedGroups || !req.session.verifiedGroups.includes(groupId)) {
-        return res.status(403).json({ error: '未验证权限' });
-    }
-    
-    const groupBlockedWords = loadGroupBlockedWords();
-    groupBlockedWords[groupId] = {
-        allofthem: isDisabled,
-        words: disabledWords || []
-    };
-    
-    saveGroupBlockedWords(groupBlockedWords);
-    res.json({ success: true });
-});
-
-// 获取群黑名单
-app.get('/api/group-blacklist', (req, res) => {
-    const groupId = req.query.groupId;
-    if (!groupId) {
-        return res.status(400).json({ error: '缺少群ID参数' });
-    }
-    
-    if (!req.session.verifiedGroups || !req.session.verifiedGroups.includes(groupId)) {
-        return res.status(403).json({ error: '未验证权限' });
-    }
-    
-    const enabledGroupBlacklists = loadEnabledGroupBlacklists();
-    const useGroupBlacklist = enabledGroupBlacklists.includes(groupId);
-    const groupBlacklist = useGroupBlacklist ? loadGroupBlacklist(groupId) : [];
-    
-    res.json({
-        useGroupBlacklist,
-        blacklist: groupBlacklist
-    });
-});
-
-// 更新群黑名单
-app.post('/api/update-group-blacklist', (req, res) => {
-    const { groupId, blacklist, useGroupBlacklist } = req.body;
-    if (!groupId) {
-        return res.status(400).json({ error: '缺少群ID参数' });
-    }
-    
-    if (!req.session.verifiedGroups || !req.session.verifiedGroups.includes(groupId)) {
-        return res.status(403).json({ error: '未验证权限' });
-    }
-    
-    // 更新独立黑名单启用状态
-    let enabledGroupBlacklists = loadEnabledGroupBlacklists();
-    if (useGroupBlacklist && !enabledGroupBlacklists.includes(groupId)) {
-        enabledGroupBlacklists.push(groupId);
-        saveEnabledGroupBlacklists(enabledGroupBlacklists);
-    } else if (!useGroupBlacklist && enabledGroupBlacklists.includes(groupId)) {
-        enabledGroupBlacklists = enabledGroupBlacklists.filter(id => id !== groupId);
-        saveEnabledGroupBlacklists(enabledGroupBlacklists);
-    }
-    
-    // 保存黑名单数据
-    if (useGroupBlacklist) {
-        saveGroupBlacklist(groupId, blacklist);
-    }
-    
-    res.json({ success: true });
-});
-
+// 网页管理接口（已废弃，等待更新）
 app.get('/login', (req, res) => {
-    res.sendFile(path.join(__dirname, 'views/login.html'));
+    const groupId = req.query.groupId;
+    if (!groupId) return res.status(400).send('缺少群ID参数');
+    res.sendFile(path.join(__dirname, 'views', 'login.html'));
 });
 
-// 管理面板
 app.get('/manage', (req, res) => {
     const groupId = req.query.groupId;
-    if (!groupId) {
-        return res.status(400).send('缺少群ID参数');
-    }
-    
-    if (!req.session.verifiedGroups || !req.session.verifiedGroups.includes(groupId)) {
-        return res.redirect(`/login?groupId=${groupId}`);
-    }
-    
-    res.sendFile(path.join(__dirname, 'public/index.html'));
+    if (!groupId || !req.session[groupId]) return res.redirect(`/login?groupId=${groupId}`);
+    res.sendFile(path.join(__dirname, 'views', 'management.html'));
 });
 
+app.get('/api/generate-code', (req, res) => {
+    const groupId = req.query.groupId;
+    const code = Math.random().toString(36).substring(2, 8).toUpperCase();
+    activeSessions.set(groupId, { code, timestamp: Date.now() });
+    res.json({ code: 1, data: { code } });
+});
+
+app.get('/api/check-session', (req, res) => {
+    const groupId = req.query.groupId;
+    const sessionData = activeSessions.get(groupId);
+    
+    if (sessionData && Date.now() - sessionData.timestamp < 300000) {
+        req.session[groupId] = true;
+        return res.json({ code: 1 });
+    }
+    
+    res.json({ code: 0, msg: '验证未通过或已过期' });
+});
+
+app.get('/api/group-blocked-words', (req, res) => {
+    const groupId = req.query.groupId;
+    const config = loadGroupConfig(groupId);
+    res.json({
+        allBlockedWords: loadBlockedWords(),
+        disabledWords: config.blockedWords.disabledWords,
+        isDisabled: config.blockedWords.disabled
+    });
+});
+
+app.post('/api/update-group-blocked-words', (req, res) => {
+    const { groupId, disabledWords, isDisabled } = req.body;
+    const config = loadGroupConfig(groupId);
+    config.blockedWords = { disabled: isDisabled, disabledWords };
+    saveGroupConfig(groupId, config);
+    res.json({ code: 1 });
+});
+
+app.get('/api/group-blacklist', (req, res) => {
+    const groupId = req.query.groupId;
+    const config = loadGroupConfig(groupId);
+    res.json({
+        blacklist: loadGroupBlacklist(groupId),
+        useGroupBlacklist: config.useGroupBlacklist
+    });
+});
+
+app.post('/api/update-group-blacklist', (req, res) => {
+    const { groupId, blacklist, useGroupBlacklist } = req.body;
+    const config = loadGroupConfig(groupId);
+    config.useGroupBlacklist = useGroupBlacklist;
+    saveGroupConfig(groupId, config);
+    saveGroupBlacklist(groupId, blacklist);
+    res.json({ code: 1 });
+});
+
+// 订阅地址
 app.post('/sub', (req, res) => {
+    console.log('收到订阅请求，原始数据:', {
+        body: req.body,
+        headers: req.headers,
+        ip: req.ip,
+        timestamp: new Date().toISOString()
+    });
+    
     subscription.listen(req.body);
-    res.sendStatus(200);
+    res.status(200).json({ code: 0, msg: 'success' });
 });
 
-const PORT = 7889;
+// 启动服务
+const PORT = process.env.PORT || 7889;
 app.listen(PORT, () => {
-    console.log(`Server is running on port ${PORT}`);
+    console.log(`机器人服务已启动，端口: ${PORT}`);
+    initConfigWatchers();
 });
